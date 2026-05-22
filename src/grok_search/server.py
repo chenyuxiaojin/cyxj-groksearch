@@ -17,12 +17,14 @@ try:
     from grok_search.config import config
     from grok_search.sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from grok_search.planning import engine as planning_engine, _split_csv
+    from grok_search.key_pool import pick_tavily_key, pick_failover_key, mask_tail, mark_key_failed, cooldown_status
 except ImportError:
     from .providers.grok import GrokSearchProvider
     from .logger import log_info
     from .config import config
     from .sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from .planning import engine as planning_engine, _split_csv
+    from .key_pool import pick_tavily_key, pick_failover_key, mask_tail, mark_key_failed, cooldown_status
 
 import asyncio
 
@@ -150,7 +152,7 @@ async def web_search(
     grok_provider = GrokSearchProvider(api_url, api_key, effective_model)
 
     # 计算额外信源配额
-    has_tavily = bool(config.tavily_api_key)
+    has_tavily = bool(config.tavily_api_keys)
     has_firecrawl = bool(config.firecrawl_api_key)
     firecrawl_count = 0
     tavily_count = 0
@@ -236,7 +238,7 @@ async def get_sources(
 async def _call_tavily_extract(url: str) -> str | None:
     import httpx
     api_url = config.tavily_api_url
-    api_key = config.tavily_api_key
+    api_key = pick_tavily_key(config.tavily_api_keys)
     if not api_key:
         return None
     endpoint = f"{api_url.rstrip('/')}/extract"
@@ -245,6 +247,9 @@ async def _call_tavily_extract(url: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(endpoint, headers=headers, json=body)
+            if response.status_code in (401, 403, 429):
+                mark_key_failed(api_key)
+                return None
             response.raise_for_status()
             data = response.json()
             if data.get("results") and len(data["results"]) > 0:
@@ -257,7 +262,7 @@ async def _call_tavily_extract(url: str) -> str | None:
 
 async def _call_tavily_search(query: str, max_results: int = 6) -> list[dict] | None:
     import httpx
-    api_key = config.tavily_api_key
+    api_key = pick_tavily_key(config.tavily_api_keys)
     if not api_key:
         return None
     endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
@@ -272,6 +277,9 @@ async def _call_tavily_search(query: str, max_results: int = 6) -> list[dict] | 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(endpoint, headers=headers, json=body)
+            if response.status_code in (401, 403, 429):
+                mark_key_failed(api_key)
+                return None
             response.raise_for_status()
             data = response.json()
             results = data.get("results", [])
@@ -372,9 +380,99 @@ async def web_fetch(
         return result
 
     await log_info(ctx, "Fetch Failed!", config.debug_enabled)
-    if not config.tavily_api_key and not config.firecrawl_api_key:
+    if not config.tavily_api_keys and not config.firecrawl_api_key:
         return "配置错误: TAVILY_API_KEY 和 FIRECRAWL_API_KEY 均未配置"
     return "提取失败: 所有提取服务均未能获取内容"
+
+
+async def _call_firecrawl_screenshot(url: str, full_page: bool, ctx=None) -> dict | str:
+    """调用 Firecrawl /v2/scrape 拿截图，多 key failover。
+    成功返回 dict（含 screenshot_url 等元数据），失败返回中文错误描述字符串。
+    走独立的 FIRECRAWL_SCREENSHOT_API_URL/KEYS，不复用 web_fetch 的 Firecrawl 通道。
+    401/403/429 会自动把当前 key 冷却 30 分钟并切到下一个 key。"""
+    import httpx
+    api_url = config.firecrawl_screenshot_api_url
+    keys = config.firecrawl_screenshot_api_keys
+    if not keys:
+        return "配置错误: FIRECRAWL_SCREENSHOT_API_KEYS 未配置（也可设 FIRECRAWL_SCREENSHOT_API_KEY 单数）"
+    endpoint = f"{api_url.rstrip('/')}/scrape"
+    screenshot_format: dict = {"type": "screenshot", "fullPage": True} if full_page else {"type": "screenshot"}
+    body = {"url": url, "formats": [screenshot_format], "timeout": 60000}
+    last_error: str | None = None
+    # 最多尝试 len(keys) 次，每次失败就 cooldown 当前 key 切下一个
+    for attempt in range(len(keys)):
+        api_key = pick_failover_key(keys, label="firecrawl-screenshot")
+        if not api_key:
+            return last_error or f"截图失败: 所有 {len(keys)} 个 Firecrawl 截图 key 都在 cooldown 中（默认 30 分钟）"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(endpoint, headers=headers, json=body)
+                if response.status_code in (401, 403, 429):
+                    mark_key_failed(api_key)
+                    last_error = f"HTTP错误: {response.status_code}（key ...{mask_tail(api_key)} 已 cooldown 30 分钟）"
+                    await log_info(ctx, f"Firecrawl screenshot: {last_error}, 尝试下一个 key", config.debug_enabled)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                inner = data.get("data") or {}
+                screenshot_url = inner.get("screenshot")
+                if not screenshot_url:
+                    await log_info(ctx, f"Firecrawl screenshot: 响应缺少 screenshot 字段, payload={data}", config.debug_enabled)
+                    return "截图失败: Firecrawl 未返回截图 URL"
+                meta = inner.get("metadata") or {}
+                return {
+                    "url": url,
+                    "screenshot_url": screenshot_url,
+                    "format": "screenshot@fullPage" if full_page else "screenshot",
+                    "title": meta.get("title"),
+                    "status_code": meta.get("statusCode"),
+                    "credits_used": meta.get("creditsUsed"),
+                    "cache_state": meta.get("cacheState"),
+                    "key_tail": mask_tail(api_key),
+                    "note": "screenshot_url 是 GCS 签名链接，会在数小时内过期，请尽快下载",
+                }
+        except httpx.HTTPStatusError as e:
+            await log_info(ctx, f"Firecrawl screenshot HTTP错误: {e.response.status_code} - {e.response.text[:200]}", config.debug_enabled)
+            return f"HTTP错误: {e.response.status_code} - {e.response.text[:200]}"
+        except httpx.TimeoutException:
+            return "截图超时: Firecrawl 90 秒内未返回"
+        except Exception as e:
+            await log_info(ctx, f"Firecrawl screenshot error: {e}", config.debug_enabled)
+            return f"截图错误: {str(e)}"
+    return last_error or "截图失败: 所有 key 均被拒"
+
+
+@mcp.tool(
+    name="web_screenshot",
+    output_schema=None,
+    description="""
+    Captures a screenshot of a webpage via Firecrawl and returns a temporary signed PNG URL.
+
+    **Key Features:**
+        - **Viewport or Full Page:** Toggle between first-fold (default) and full-page capture.
+        - **JS-Rendered Pages:** Firecrawl waits for the page to load before snapping, so single-page apps and JS-heavy sites work.
+        - **Direct URL Return:** No local download; caller receives a GCS signed URL ready to fetch.
+
+    **Edge Cases & Best Practices:**
+        - The returned screenshot_url is short-lived (expires within hours). Download the PNG promptly if you need to keep it.
+        - Each call costs ~1 Firecrawl credit (full-page on long pages may cost more).
+        - Pages behind auth/paywalls or geo-blocked content may screenshot a login or error page.
+    """,
+    meta={"version": "1.0.0", "author": "guda.studio"},
+)
+async def web_screenshot(
+    url: Annotated[str, "Valid HTTP/HTTPS URL of the page to screenshot."],
+    full_page: Annotated[bool, "If True, capture the entire scrollable page; otherwise just the viewport (first fold). Default False."] = False,
+    ctx: Context = None,
+) -> str:
+    import json
+    await log_info(ctx, f"Begin Screenshot: {url} (full_page={full_page})", config.debug_enabled)
+    result = await _call_firecrawl_screenshot(url, full_page, ctx)
+    if isinstance(result, dict):
+        await log_info(ctx, "Screenshot Finished!", config.debug_enabled)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    return result
 
 
 async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 1,
@@ -382,7 +480,7 @@ async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 
     import httpx
     import json
     api_url = config.tavily_api_url
-    api_key = config.tavily_api_key
+    api_key = pick_tavily_key(config.tavily_api_keys)
     if not api_key:
         return "配置错误: TAVILY_API_KEY 未配置，请设置环境变量 TAVILY_API_KEY"
     endpoint = f"{api_url.rstrip('/')}/map"
@@ -393,6 +491,9 @@ async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 
     try:
         async with httpx.AsyncClient(timeout=float(timeout + 10)) as client:
             response = await client.post(endpoint, headers=headers, json=body)
+            if response.status_code in (401, 403, 429):
+                mark_key_failed(api_key)
+                return f"HTTP错误: {response.status_code}（key 已暂时移出轮询池）"
             response.raise_for_status()
             data = response.json()
             return json.dumps({
@@ -531,6 +632,47 @@ async def get_config_info() -> str:
         test_result["message"] = f"未知错误: {str(e)}"
 
     config_info["connection_test"] = test_result
+
+    # 默认模型探针：发 1 个 1-token 请求，看中转站对当前 model 是否还有账号
+    default_model_health = {"model": "未配置", "status": "未测试", "response_time_ms": 0, "message": ""}
+    try:
+        api_url = config.grok_api_url
+        api_key = config.grok_api_key
+        model = config.grok_model
+        default_model_health["model"] = model
+        probe_payload = {
+            "model": model,
+            "stream": False,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+        import time as _t
+        _start = _t.time()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=probe_payload,
+            )
+            default_model_health["response_time_ms"] = round((_t.time() - _start) * 1000, 2)
+            text = resp.text or ""
+            if "No available accounts" in text or "rate_limit_exceeded" in text:
+                default_model_health["status"] = "❌ 中转站无账号"
+                default_model_health["message"] = "该模型在中转站没有可用账号，建议切换其他模型（如 grok-4.20-fast）"
+            elif resp.status_code == 200:
+                default_model_health["status"] = "✅ 可用"
+                default_model_health["message"] = "1-token 探针通过"
+            else:
+                default_model_health["status"] = f"⚠️ HTTP {resp.status_code}"
+                default_model_health["message"] = text[:200]
+    except httpx.TimeoutException:
+        default_model_health["status"] = "❌ 探针超时"
+    except Exception as e:
+        default_model_health["status"] = "❌ 探针失败"
+        default_model_health["message"] = str(e)[:200]
+
+    config_info["default_model_health"] = default_model_health
+    config_info["tavily_key_cooldown"] = cooldown_status(config.tavily_api_keys)
 
     return json.dumps(config_info, ensure_ascii=False, indent=2)
 

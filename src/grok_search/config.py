@@ -110,6 +110,16 @@ class Config:
         return os.getenv("TAVILY_API_KEY") or self.guda_api_key
 
     @property
+    def tavily_api_keys(self) -> list[str]:
+        """所有可用的 Tavily API Keys，用于多 key 轮询。
+        优先读 TAVILY_API_KEYS（逗号分隔列表），fallback 到单数 TAVILY_API_KEY / GUDA_API_KEY。"""
+        multi = os.getenv("TAVILY_API_KEYS")
+        if multi:
+            return [k.strip() for k in multi.split(",") if k.strip()]
+        single = self.tavily_api_key
+        return [single] if single else []
+
+    @property
     def firecrawl_api_url(self) -> str:
         url = os.getenv("FIRECRAWL_API_URL")
         if not url and self.guda_api_key:
@@ -119,6 +129,24 @@ class Config:
     @property
     def firecrawl_api_key(self) -> str | None:
         return os.getenv("FIRECRAWL_API_KEY") or self.guda_api_key
+
+    @property
+    def firecrawl_screenshot_api_url(self) -> str:
+        return os.getenv("FIRECRAWL_SCREENSHOT_API_URL") or "https://api.firecrawl.dev/v2"
+
+    @property
+    def firecrawl_screenshot_api_key(self) -> str | None:
+        return os.getenv("FIRECRAWL_SCREENSHOT_API_KEY")
+
+    @property
+    def firecrawl_screenshot_api_keys(self) -> list[str]:
+        """截图专用 Firecrawl key 列表，用于 failover。
+        优先读 FIRECRAWL_SCREENSHOT_API_KEYS（逗号分隔），fallback 单数 FIRECRAWL_SCREENSHOT_API_KEY。"""
+        multi = os.getenv("FIRECRAWL_SCREENSHOT_API_KEYS")
+        if multi:
+            return [k.strip() for k in multi.split(",") if k.strip()]
+        single = self.firecrawl_screenshot_api_key
+        return [single] if single else []
 
     @property
     def log_level(self) -> str:
@@ -208,8 +236,14 @@ class Config:
             "TAVILY_API_URL": self.tavily_api_url,
             "TAVILY_ENABLED": self.tavily_enabled,
             "TAVILY_API_KEY": self._mask_api_key(self.tavily_api_key) if self.tavily_api_key else "未配置",
+            "TAVILY_API_KEYS": [self._mask_api_key(k) for k in self.tavily_api_keys] if self.tavily_api_keys else "未配置",
+            "TAVILY_API_KEYS_COUNT": len(self.tavily_api_keys),
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
+            "FIRECRAWL_SCREENSHOT_API_URL": self.firecrawl_screenshot_api_url,
+            "FIRECRAWL_SCREENSHOT_API_KEY": self._mask_api_key(self.firecrawl_screenshot_api_key) if self.firecrawl_screenshot_api_key else "未配置",
+            "FIRECRAWL_SCREENSHOT_API_KEYS": [self._mask_api_key(k) for k in self.firecrawl_screenshot_api_keys] if self.firecrawl_screenshot_api_keys else "未配置",
+            "FIRECRAWL_SCREENSHOT_API_KEYS_COUNT": len(self.firecrawl_screenshot_api_keys),
             "config_status": config_status,
         }
         return info
