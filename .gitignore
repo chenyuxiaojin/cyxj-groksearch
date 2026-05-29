@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+
+# 运行时日志
+logs/
+.grok-search/
+
+# macOS
+.DS_Store

@@ -2,16 +2,10 @@ import os
 import json
 from pathlib import Path
 
+
 class Config:
     _instance = None
-    _SETUP_COMMAND = (
-        'claude mcp add-json grok-search --scope user '
-        '\'{"type":"stdio","command":"uvx","args":["--from",'
-        '"git+https://github.com/GuDaStudio/GrokSearch","grok-search"],'
-        '"env":{"GUDA_API_KEY":"your-guda-api-key"}}\''
-    )
-    _DEFAULT_MODEL = "grok-4.20-beta"
-    _DEFAULT_GUDA_BASE_URL = "https://code.guda.studio"
+    _DEFAULT_MODEL = "grok-4.3-console"
 
     def __new__(cls):
         if cls._instance is None:
@@ -36,14 +30,14 @@ class Config:
         if not self.config_file.exists():
             return {}
         try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
+            with open(self.config_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             return {}
 
     def _save_config_file(self, config_data: dict) -> None:
         try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
+            with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
         except IOError as e:
             raise ValueError(f"无法保存配置文件: {str(e)}")
@@ -65,33 +59,20 @@ class Config:
         return int(os.getenv("GROK_RETRY_MAX_WAIT", "10"))
 
     @property
-    def guda_base_url(self) -> str:
-        return os.getenv("GUDA_BASE_URL", self._DEFAULT_GUDA_BASE_URL)
-
-    @property
-    def guda_api_key(self) -> str | None:
-        return os.getenv("GUDA_API_KEY")
-
-    @property
     def grok_api_url(self) -> str:
         url = os.getenv("GROK_API_URL")
         if not url:
-            if self.guda_api_key:
-                return f"{self.guda_base_url}/grok/v1"
             raise ValueError(
-                f"Grok API URL 未配置！\n"
-                f"请使用以下命令配置 MCP 服务器：\n{self._SETUP_COMMAND}"
+                "Grok API URL 未配置！请在环境变量（或 密钥存储/.env）中设置 "
+                "GROK_API_URL（OpenAI 兼容端点，含 /v1）与 GROK_API_KEY。"
             )
         return url
 
     @property
     def grok_api_key(self) -> str:
-        key = os.getenv("GROK_API_KEY") or self.guda_api_key
+        key = os.getenv("GROK_API_KEY")
         if not key:
-            raise ValueError(
-                f"Grok API Key 未配置！\n"
-                f"请使用以下命令配置 MCP 服务器：\n{self._SETUP_COMMAND}"
-            )
+            raise ValueError("Grok API Key 未配置！请设置环境变量 GROK_API_KEY。")
         return key
 
     @property
@@ -100,53 +81,49 @@ class Config:
 
     @property
     def tavily_api_url(self) -> str:
-        url = os.getenv("TAVILY_API_URL")
-        if not url and self.guda_api_key:
-            return f"{self.guda_base_url}/tavily"
-        return url or "https://api.tavily.com"
+        return os.getenv("TAVILY_API_URL") or "https://api.tavily.com"
 
     @property
     def tavily_api_key(self) -> str | None:
-        return os.getenv("TAVILY_API_KEY") or self.guda_api_key
+        keys = self.tavily_api_keys
+        return keys[0] if keys else None
 
     @property
     def tavily_api_keys(self) -> list[str]:
-        """所有可用的 Tavily API Keys，用于多 key 轮询。
-        优先读 TAVILY_API_KEYS（逗号分隔列表），fallback 到单数 TAVILY_API_KEY / GUDA_API_KEY。"""
-        multi = os.getenv("TAVILY_API_KEYS")
-        if multi:
-            return [k.strip() for k in multi.split(",") if k.strip()]
-        single = self.tavily_api_key
-        return [single] if single else []
+        """Tavily key 列表（多 key 轮询）。优先 TAVILY_API_KEYS（逗号分隔），回落 TAVILY_API_KEY。"""
+        for raw in (os.getenv("TAVILY_API_KEYS"), os.getenv("TAVILY_API_KEY")):
+            if raw:
+                keys = [k.strip() for k in raw.split(",") if k.strip()]
+                if keys:
+                    return keys
+        return []
 
     @property
     def firecrawl_api_url(self) -> str:
-        url = os.getenv("FIRECRAWL_API_URL")
-        if not url and self.guda_api_key:
-            return f"{self.guda_base_url}/firecrawl"
-        return url or "https://api.firecrawl.dev/v2"
+        return os.getenv("FIRECRAWL_API_URL") or "https://api.firecrawl.dev/v2"
+
+    @property
+    def firecrawl_api_keys(self) -> list[str]:
+        """统一 Firecrawl key 列表，供抓取降级 / 补信源 / 截图三用。
+        优先级：FIRECRAWL_API_KEYS → FIRECRAWL_API_KEY
+                → FIRECRAWL_SCREENSHOT_API_KEYS → FIRECRAWL_SCREENSHOT_API_KEY（向后兼容旧 .env）。"""
+        candidates = (
+            os.getenv("FIRECRAWL_API_KEYS"),
+            os.getenv("FIRECRAWL_API_KEY"),
+            os.getenv("FIRECRAWL_SCREENSHOT_API_KEYS"),
+            os.getenv("FIRECRAWL_SCREENSHOT_API_KEY"),
+        )
+        for raw in candidates:
+            if raw:
+                keys = [k.strip() for k in raw.split(",") if k.strip()]
+                if keys:
+                    return keys
+        return []
 
     @property
     def firecrawl_api_key(self) -> str | None:
-        return os.getenv("FIRECRAWL_API_KEY") or self.guda_api_key
-
-    @property
-    def firecrawl_screenshot_api_url(self) -> str:
-        return os.getenv("FIRECRAWL_SCREENSHOT_API_URL") or "https://api.firecrawl.dev/v2"
-
-    @property
-    def firecrawl_screenshot_api_key(self) -> str | None:
-        return os.getenv("FIRECRAWL_SCREENSHOT_API_KEY")
-
-    @property
-    def firecrawl_screenshot_api_keys(self) -> list[str]:
-        """截图专用 Firecrawl key 列表，用于 failover。
-        优先读 FIRECRAWL_SCREENSHOT_API_KEYS（逗号分隔），fallback 单数 FIRECRAWL_SCREENSHOT_API_KEY。"""
-        multi = os.getenv("FIRECRAWL_SCREENSHOT_API_KEYS")
-        if multi:
-            return [k.strip() for k in multi.split(",") if k.strip()]
-        single = self.firecrawl_screenshot_api_key
-        return [single] if single else []
+        keys = self.firecrawl_api_keys
+        return keys[0] if keys else None
 
     @property
     def log_level(self) -> str:
@@ -158,21 +135,18 @@ class Config:
         log_dir = Path(log_dir_str)
         if log_dir.is_absolute():
             return log_dir
-
         home_log_dir = Path.home() / ".config" / "grok-search" / log_dir_str
         try:
             home_log_dir.mkdir(parents=True, exist_ok=True)
             return home_log_dir
         except OSError:
             pass
-
         cwd_log_dir = Path.cwd() / log_dir_str
         try:
             cwd_log_dir.mkdir(parents=True, exist_ok=True)
             return cwd_log_dir
         except OSError:
             pass
-
         tmp_log_dir = Path("/tmp") / "grok-search" / log_dir_str
         tmp_log_dir.mkdir(parents=True, exist_ok=True)
         return tmp_log_dir
@@ -190,7 +164,6 @@ class Config:
     def grok_model(self) -> str:
         if self._cached_model is not None:
             return self._cached_model
-
         model = (
             os.getenv("GROK_MODEL")
             or self._load_config_file().get("model")
@@ -207,26 +180,21 @@ class Config:
 
     @staticmethod
     def _mask_api_key(key: str) -> str:
-        """脱敏显示 API Key，只显示前后各 4 个字符"""
         if not key or len(key) <= 8:
             return "***"
         return f"{key[:4]}{'*' * (len(key) - 8)}{key[-4:]}"
 
     def get_config_info(self) -> dict:
-        """获取配置信息（API Key 已脱敏）"""
         try:
             api_url = self.grok_api_url
-            api_key_raw = self.grok_api_key
-            api_key_masked = self._mask_api_key(api_key_raw)
+            api_key_masked = self._mask_api_key(self.grok_api_key)
             config_status = "✅ 配置完整"
         except ValueError as e:
             api_url = "未配置"
             api_key_masked = "未配置"
             config_status = f"❌ 配置错误: {str(e)}"
 
-        info = {
-            "GUDA_BASE_URL": self.guda_base_url,
-            "GUDA_API_KEY": self._mask_api_key(self.guda_api_key) if self.guda_api_key else "未配置",
+        return {
             "GROK_API_URL": api_url,
             "GROK_API_KEY": api_key_masked,
             "GROK_MODEL": self.grok_model,
@@ -235,17 +203,13 @@ class Config:
             "GROK_LOG_DIR": str(self.log_dir),
             "TAVILY_API_URL": self.tavily_api_url,
             "TAVILY_ENABLED": self.tavily_enabled,
-            "TAVILY_API_KEY": self._mask_api_key(self.tavily_api_key) if self.tavily_api_key else "未配置",
             "TAVILY_API_KEYS": [self._mask_api_key(k) for k in self.tavily_api_keys] if self.tavily_api_keys else "未配置",
             "TAVILY_API_KEYS_COUNT": len(self.tavily_api_keys),
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
-            "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
-            "FIRECRAWL_SCREENSHOT_API_URL": self.firecrawl_screenshot_api_url,
-            "FIRECRAWL_SCREENSHOT_API_KEY": self._mask_api_key(self.firecrawl_screenshot_api_key) if self.firecrawl_screenshot_api_key else "未配置",
-            "FIRECRAWL_SCREENSHOT_API_KEYS": [self._mask_api_key(k) for k in self.firecrawl_screenshot_api_keys] if self.firecrawl_screenshot_api_keys else "未配置",
-            "FIRECRAWL_SCREENSHOT_API_KEYS_COUNT": len(self.firecrawl_screenshot_api_keys),
+            "FIRECRAWL_API_KEYS": [self._mask_api_key(k) for k in self.firecrawl_api_keys] if self.firecrawl_api_keys else "未配置",
+            "FIRECRAWL_API_KEYS_COUNT": len(self.firecrawl_api_keys),
             "config_status": config_status,
         }
-        return info
+
 
 config = Config()

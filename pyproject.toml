@@ -26,3 +26,8 @@ where = ["src"]
 
 [project.scripts]
 grok-search = "grok_search.server:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
