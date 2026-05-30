@@ -1,6 +1,6 @@
 # grok-search MCP
 
-为 Claude Code 提供实时联网能力的本地 MCP 服务器：Grok 负责 AI 搜索，Tavily 负责高保真抓取/站点映射，Firecrawl 托底抓取与网页截图。
+为 Claude Code 提供实时联网能力的 MCP 服务器：**Grok** 负责 AI 搜索，**Tavily** 负责高保真抓取/站点映射，**Firecrawl** 托底抓取与网页截图。
 
 ## 架构
 
@@ -16,24 +16,27 @@ Claude ──MCP──► grok-search
                  └─ toggle_builtin_tools ─► 开关 Claude Code 官方 WebSearch/WebFetch
 ```
 
-## 启动方式
+## 安装（推荐）
 
-本机通过 `grok-search-launcher.sh` 启动：从 `密钥存储/.env` 加载密钥、把所有 `TAVILY_API_KEY*` 聚合成 `TAVILY_API_KEYS` 多 key 轮询，再用 `uv run` 跑本地源码。
+前置：[uv](https://docs.astral.sh/uv/)、Claude Code。用 `uvx` 直接从本仓库安装，密钥写在注册的 `env` 里：
 
-`~/.claude.json` 中注册：
-
-```json
-{
-  "grok-search": {
-    "type": "stdio",
-    "command": "/Users/chenhuajin/项目/自己的应用/GrokSearch/grok-search-launcher.sh",
-    "args": [],
-    "env": {}
+```bash
+claude mcp add-json grok-search --scope user '{
+  "type": "stdio",
+  "command": "uvx",
+  "args": ["--from", "git+https://github.com/chenhuajinchj/cyxj-groksearch@main", "grok-search"],
+  "env": {
+    "GROK_API_URL": "https://your-grok-endpoint/v1",
+    "GROK_API_KEY": "your-grok-api-key",
+    "TAVILY_API_KEYS": "tvly-...",
+    "FIRECRAWL_API_KEYS": "fc-..."
   }
-}
+}'
 ```
 
-验证：`claude mcp list` 显示 `grok-search ✓`。
+只有 `GROK_API_URL` / `GROK_API_KEY` 必填；Tavily / Firecrawl 可选（不配则对应工具返回配置提示）。
+
+验证：`claude mcp list` 显示 `grok-search ✓`。装好后可在对话里说「调用 grok-search 的 toggle_builtin_tools 关闭官方 WebSearch/WebFetch」，把联网强制路由到本工具。
 
 ## 环境变量
 
@@ -50,16 +53,32 @@ Claude ──MCP──► grok-search
 | `GROK_LOG_LEVEL` / `GROK_LOG_DIR` | ❌ | `INFO` / `logs` | 日志级别/目录 |
 | `GROK_RETRY_MAX_ATTEMPTS` / `GROK_RETRY_MULTIPLIER` / `GROK_RETRY_MAX_WAIT` | ❌ | `3` / `1` / `10` | 重试策略 |
 
+> 完整示例见 [`.env.example`](./.env.example)。
+>
 > Firecrawl key 读取优先级：`FIRECRAWL_API_KEYS` → `FIRECRAWL_API_KEY` → `FIRECRAWL_SCREENSHOT_API_KEYS` → `FIRECRAWL_SCREENSHOT_API_KEY`。同一把 key 同时供 `web_fetch` 降级、`extra_sources` 补信源、`web_screenshot`，统一多 key failover + 30 分钟 cooldown。
+
+## 用 launcher 启动（可选）
+
+仓库自带 `grok-search-launcher.sh`：加载一个 `.env`、把所有 `TAVILY_API_KEY*` 变量自动聚合成 `TAVILY_API_KEYS` 多 key 轮询，再用本地源码 `uv run` 启动（改源码即时生效，适合本地开发）。注册时把 `command` 指向脚本即可。`.env` 默认取脚本同目录，可用 `GROK_SEARCH_ENV_FILE` 指向别处：
+
+```json
+{
+  "grok-search": {
+    "type": "stdio",
+    "command": "/abs/path/to/cyxj-groksearch/grok-search-launcher.sh",
+    "args": [],
+    "env": { "GROK_SEARCH_ENV_FILE": "/abs/path/to/your/.env" }
+  }
+}
+```
 
 ## 开发
 
 ```bash
-cd ~/项目/自己的应用/GrokSearch
-uv run pytest -v                                   # 跑测试
-uv run --directory . grok-search                   # 本地起 stdio（一般由 launcher 调用）
+uv run --extra dev pytest -v       # 跑测试
+uv run --directory . grok-search   # 本地起 stdio（一般由 launcher 调用）
 ```
 
 ## 许可证
 
-[MIT License](LICENSE)
+[MIT License](LICENSE) · fork 自 [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch)，已去除原作者商业引流并重写。

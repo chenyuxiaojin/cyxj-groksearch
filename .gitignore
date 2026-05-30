@@ -8,6 +8,10 @@ dist/
 # 虚拟环境
 .venv/
 
+# 密钥（只提交 .env.example 占位，绝不提交真实 .env）
+.env
+.env.local
+
 # 运行时日志
 logs/
 .grok-search/
