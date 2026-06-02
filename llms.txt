@@ -11,4 +11,4 @@ All three APIs (Grok, Tavily, Firecrawl) support comma-separated multi-key pools
 - [中文文档 (README.zh-CN.md)](README.zh-CN.md): 完整中文文档，含安装方式、逐工具说明、环境变量表、FAQ 及与同类工具对比。
 
 ## Links
-- Repository: https://github.com/chenhuajinchj/cyxj-groksearch
+- Repository: https://github.com/chenyuxiaojin/cyxj-groksearch

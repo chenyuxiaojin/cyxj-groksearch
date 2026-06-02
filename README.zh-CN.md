@@ -55,7 +55,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 claude mcp add-json grok-search --scope user '{
   "type": "stdio",
   "command": "uvx",
-  "args": ["--from", "git+https://github.com/chenhuajinchj/cyxj-groksearch@main", "grok-search"],
+  "args": ["--from", "git+https://github.com/chenyuxiaojin/cyxj-groksearch@main", "grok-search"],
   "env": {
     "GROK_API_URL": "https://your-grok-endpoint/v1",
     "GROK_API_KEY": "your-grok-api-key",
