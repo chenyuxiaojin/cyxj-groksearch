@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grok-search"
 version = "0.1.0"
-description = "MCP server for AI model search capabilities"
+description = "MCP server that gives Claude Code real-time web access — Grok AI search, Tavily fetch/map, and Firecrawl screenshots, with multi-key failover."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

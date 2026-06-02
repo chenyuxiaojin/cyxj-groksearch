@@ -1,0 +1,14 @@
+# cyxj-groksearch
+
+> cyxj-groksearch is an MCP server that gives Claude Code real-time web access — Grok AI search, Tavily fetch/map, and Firecrawl screenshots, with multi-key failover.
+
+cyxj-groksearch exposes 8 MCP tools: web_search (Grok AI search with optional extra_sources cross-verification), get_sources (retrieve cached sources by session_id), web_fetch (full-text extraction via Tavily, Firecrawl fallback), web_screenshot (JS-rendered screenshot via Firecrawl), web_map (site structure mapping via Tavily), get_config_info (configuration diagnostics and connection test), switch_model (persistent model switching), and toggle_builtin_tools (block or unblock Claude Code's built-in WebSearch/WebFetch).
+
+All three APIs (Grok, Tavily, Firecrawl) support comma-separated multi-key pools with 30-minute cooldown failover. Only GROK_API_URL and GROK_API_KEY are required; Tavily and Firecrawl are optional.
+
+## Documentation
+- [README (English)](README.md): Full English documentation — installation, tool reference table, environment variables, FAQ, and comparison with alternative MCP servers.
+- [中文文档 (README.zh-CN.md)](README.zh-CN.md): 完整中文文档，含安装方式、逐工具说明、环境变量表、FAQ 及与同类工具对比。
+
+## Links
+- Repository: https://github.com/chenhuajinchj/cyxj-groksearch
