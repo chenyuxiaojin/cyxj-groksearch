@@ -1,6 +1,10 @@
 import sys
 import asyncio
+import json
+import time
 from pathlib import Path
+
+import httpx
 
 src_dir = Path(__file__).parent.parent
 if str(src_dir) not in sys.path:
@@ -14,6 +18,7 @@ try:
     from grok_search.grok_client import GrokClient
     from grok_search.logger import log_info
     from grok_search.config import config
+    from grok_search.http_client import get_client
     from grok_search.sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from grok_search.key_pool import cooldown_status
     from grok_search.tavily_client import tavily_extract, tavily_search, tavily_map
@@ -22,6 +27,7 @@ except ImportError:
     from .grok_client import GrokClient
     from .logger import log_info
     from .config import config
+    from .http_client import get_client
     from .sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from .key_pool import cooldown_status
     from .tavily_client import tavily_extract, tavily_search, tavily_map
@@ -30,20 +36,22 @@ except ImportError:
 mcp = FastMCP("grok-search")
 
 _SOURCES_CACHE = SourcesCache(max_size=256)
-_AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
+# (api_url, api_key) -> (缓存时间戳, 模型列表)。带 TTL，且拉取失败不写缓存，
+# 避免一次网络抖动导致模型校验永久失效（旧实现把空列表缓存到进程结束）。
+_AVAILABLE_MODELS_CACHE: dict[tuple[str, str], tuple[float, list[str]]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+_AVAILABLE_MODELS_TTL = 600.0
 
 
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
-    import httpx
     models_url = f"{api_url.rstrip('/')}/models"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(
-            models_url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        )
-        response.raise_for_status()
-        data = response.json()
+    response = await get_client().get(
+        models_url,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    data = response.json()
     models: list[str] = []
     for item in (data or {}).get("data", []) or []:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
@@ -53,16 +61,36 @@ async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
 
 async def _get_available_models_cached(api_url: str, api_key: str) -> list[str]:
     key = (api_url, api_key)
+    now = time.monotonic()
     async with _AVAILABLE_MODELS_LOCK:
-        if key in _AVAILABLE_MODELS_CACHE:
-            return _AVAILABLE_MODELS_CACHE[key]
+        cached = _AVAILABLE_MODELS_CACHE.get(key)
+        if cached and now - cached[0] < _AVAILABLE_MODELS_TTL:
+            return cached[1]
     try:
         models = await _fetch_available_models(api_url, api_key)
     except Exception:
-        models = []
+        return []
     async with _AVAILABLE_MODELS_LOCK:
-        _AVAILABLE_MODELS_CACHE[key] = models
+        _AVAILABLE_MODELS_CACHE[key] = (time.monotonic(), models)
     return models
+
+
+def _split_extra_counts(extra_sources: int, has_tavily: bool, has_firecrawl: bool) -> tuple[int, int]:
+    """把 extra_sources 分配给 (tavily, firecrawl) 两个引擎。
+
+    两者都可用时对半分（Firecrawl 拿多的那半），让补充信源来自两个独立
+    搜索引擎，覆盖面更广；旧实现的 round(extra_sources * 1) 会把全部名额
+    给 Firecrawl，Tavily 永远分到 0。"""
+    if extra_sources <= 0:
+        return 0, 0
+    if has_tavily and has_firecrawl:
+        firecrawl_count = (extra_sources + 1) // 2
+        return extra_sources - firecrawl_count, firecrawl_count
+    if has_firecrawl:
+        return 0, extra_sources
+    if has_tavily:
+        return extra_sources, 0
+    return 0, 0
 
 
 def _extra_results_to_sources(tavily_results, firecrawl_results) -> list[dict]:
@@ -136,18 +164,9 @@ async def web_search(
 
     grok = GrokClient(api_url, api_key, effective_model)
 
-    has_tavily = bool(config.tavily_api_keys)
-    has_firecrawl = bool(config.firecrawl_api_keys)
-    firecrawl_count = 0
-    tavily_count = 0
-    if extra_sources > 0:
-        if has_firecrawl and has_tavily:
-            firecrawl_count = round(extra_sources * 1)
-            tavily_count = extra_sources - firecrawl_count
-        elif has_firecrawl:
-            firecrawl_count = extra_sources
-        elif has_tavily:
-            tavily_count = extra_sources
+    tavily_count, firecrawl_count = _split_extra_counts(
+        extra_sources, bool(config.tavily_api_keys), bool(config.firecrawl_api_keys)
+    )
 
     async def _safe_grok() -> str:
         try:
@@ -155,37 +174,15 @@ async def web_search(
         except Exception:
             return ""
 
-    async def _safe_tavily():
-        try:
-            if tavily_count:
-                return await tavily_search(query, tavily_count)
-        except Exception:
-            return None
+    # tavily_search / firecrawl_search 内部已吞掉所有异常并返回 None，
+    # 这里直接建 task 并发跑，按名字取结果，不再依赖 gather 的位置索引。
+    grok_task = asyncio.create_task(_safe_grok())
+    tavily_task = asyncio.create_task(tavily_search(query, tavily_count)) if tavily_count > 0 else None
+    firecrawl_task = asyncio.create_task(firecrawl_search(query, firecrawl_count)) if firecrawl_count > 0 else None
 
-    async def _safe_firecrawl():
-        try:
-            if firecrawl_count:
-                return await firecrawl_search(query, firecrawl_count)
-        except Exception:
-            return None
-
-    coros = [_safe_grok()]
-    if tavily_count > 0:
-        coros.append(_safe_tavily())
-    if firecrawl_count > 0:
-        coros.append(_safe_firecrawl())
-
-    gathered = await asyncio.gather(*coros)
-
-    grok_result: str = gathered[0] or ""
-    tavily_results = None
-    firecrawl_results = None
-    idx = 1
-    if tavily_count > 0:
-        tavily_results = gathered[idx]
-        idx += 1
-    if firecrawl_count > 0:
-        firecrawl_results = gathered[idx]
+    grok_result: str = (await grok_task) or ""
+    tavily_results = await tavily_task if tavily_task else None
+    firecrawl_results = await firecrawl_task if firecrawl_task else None
 
     answer, grok_sources = split_answer_and_sources(grok_result)
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
@@ -240,20 +237,57 @@ async def web_fetch(
     url: Annotated[str, "Valid HTTP/HTTPS web address pointing to the target page. Must be complete and accessible."],
     ctx: Context = None,
 ) -> str:
+    has_tavily = bool(config.tavily_api_keys)
+    has_firecrawl = bool(config.firecrawl_api_keys)
+    if not has_tavily and not has_firecrawl:
+        return "配置错误: TAVILY_API_KEYS 和 FIRECRAWL_API_KEYS 均未配置"
+
     await log_info(ctx, f"Begin Fetch: {url}", config.debug_enabled)
-    result = await tavily_extract(url)
+    if not has_firecrawl:
+        result = await tavily_extract(url)
+    elif not has_tavily:
+        result = await firecrawl_scrape(url, ctx)
+    else:
+        result = await _hedged_fetch(url, ctx)
+
     if result:
-        await log_info(ctx, "Fetch Finished (Tavily)!", config.debug_enabled)
-        return result
-    await log_info(ctx, "Tavily unavailable or failed, trying Firecrawl...", config.debug_enabled)
-    result = await firecrawl_scrape(url, ctx)
-    if result:
-        await log_info(ctx, "Fetch Finished (Firecrawl)!", config.debug_enabled)
+        await log_info(ctx, "Fetch Finished!", config.debug_enabled)
         return result
     await log_info(ctx, "Fetch Failed!", config.debug_enabled)
-    if not config.tavily_api_keys and not config.firecrawl_api_keys:
-        return "配置错误: TAVILY_API_KEYS 和 FIRECRAWL_API_KEYS 均未配置"
     return "提取失败: 所有提取服务均未能获取内容"
+
+
+async def _hedged_fetch(url: str, ctx=None) -> str | None:
+    """对冲式抓取：先发 Tavily；超过 GROK_FETCH_HEDGE_DELAY 秒仍未返回，
+    并行追加 Firecrawl，谁先出有效内容用谁，另一方立即取消。
+
+    相比旧的串行降级（Tavily 最长等 60 秒失败后才轮到 Firecrawl），慢站点
+    最坏等待从「Tavily 超时 + Firecrawl 全程」缩短为约「hedge 延迟 + 较快
+    一方的耗时」；Tavily 在延迟窗口内正常返回时行为不变，不多耗额度。"""
+    tavily_task = asyncio.create_task(tavily_extract(url))
+    done, _ = await asyncio.wait({tavily_task}, timeout=config.fetch_hedge_delay)
+
+    if tavily_task in done:
+        result = tavily_task.result()
+        if result:
+            return result
+        # Tavily 快速失败 → 直接走 Firecrawl，无需对冲
+        return await firecrawl_scrape(url, ctx)
+
+    await log_info(ctx, "Tavily slow, hedging with Firecrawl...", config.debug_enabled)
+    firecrawl_task = asyncio.create_task(firecrawl_scrape(url, ctx))
+    pending = {tavily_task, firecrawl_task}
+    result = None
+    while pending and not result:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            value = task.result()
+            if value:
+                result = value
+                break
+    for task in pending:
+        task.cancel()
+    return result
 
 
 @mcp.tool(
@@ -279,7 +313,6 @@ async def web_screenshot(
     full_page: Annotated[bool, "If True, capture the entire scrollable page; otherwise just the viewport (first fold). Default False."] = False,
     ctx: Context = None,
 ) -> str:
-    import json
     await log_info(ctx, f"Begin Screenshot: {url} (full_page={full_page})", config.debug_enabled)
     result = await firecrawl_screenshot(url, full_page, ctx)
     if isinstance(result, dict):
@@ -335,42 +368,53 @@ async def web_map(
     meta={"version": "1.3.0"},
 )
 async def get_config_info() -> str:
-    import json
-    import httpx
-    import time
-
     config_info = config.get_config_info()
 
+    # 两个探针互相独立，并发执行：总耗时从「连接测试 + 模型探针」之和
+    # 缩短为两者中较慢的一个。
+    connection_test, default_model_health = await asyncio.gather(
+        _probe_models_endpoint(), _probe_default_model()
+    )
+    config_info["connection_test"] = connection_test
+    config_info["default_model_health"] = default_model_health
+
+    config_info["tavily_key_cooldown"] = cooldown_status(config.tavily_api_keys)
+    config_info["firecrawl_key_cooldown"] = cooldown_status(config.firecrawl_api_keys)
+
+    return json.dumps(config_info, ensure_ascii=False, indent=2)
+
+
+async def _probe_models_endpoint() -> dict:
     test_result = {"status": "未测试", "message": "", "response_time_ms": 0}
     try:
         api_url = config.grok_api_url
         api_key = config.grok_api_key
         models_url = f"{api_url.rstrip('/')}/models"
-        start_time = time.time()
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                models_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            )
-            response_time = (time.time() - start_time) * 1000
-            if response.status_code == 200:
-                test_result["status"] = "✅ 连接成功"
-                test_result["message"] = f"成功获取模型列表 (HTTP {response.status_code})"
-                test_result["response_time_ms"] = round(response_time, 2)
-                try:
-                    models_data = response.json()
-                    if "data" in models_data and isinstance(models_data["data"], list):
-                        model_count = len(models_data["data"])
-                        test_result["message"] += f"，共 {model_count} 个模型"
-                        model_names = [m["id"] for m in models_data["data"] if isinstance(m, dict) and "id" in m]
-                        if model_names:
-                            test_result["available_models"] = model_names
-                except Exception:
-                    pass
-            else:
-                test_result["status"] = "⚠️ 连接异常"
-                test_result["message"] = f"HTTP {response.status_code}: {response.text[:100]}"
-                test_result["response_time_ms"] = round(response_time, 2)
+        start_time = time.monotonic()
+        response = await get_client().get(
+            models_url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=10.0,
+        )
+        response_time = (time.monotonic() - start_time) * 1000
+        if response.status_code == 200:
+            test_result["status"] = "✅ 连接成功"
+            test_result["message"] = f"成功获取模型列表 (HTTP {response.status_code})"
+            test_result["response_time_ms"] = round(response_time, 2)
+            try:
+                models_data = response.json()
+                if "data" in models_data and isinstance(models_data["data"], list):
+                    model_count = len(models_data["data"])
+                    test_result["message"] += f"，共 {model_count} 个模型"
+                    model_names = [m["id"] for m in models_data["data"] if isinstance(m, dict) and "id" in m]
+                    if model_names:
+                        test_result["available_models"] = model_names
+            except Exception:
+                pass
+        else:
+            test_result["status"] = "⚠️ 连接异常"
+            test_result["message"] = f"HTTP {response.status_code}: {response.text[:100]}"
+            test_result["response_time_ms"] = round(response_time, 2)
     except httpx.TimeoutException:
         test_result["status"] = "❌ 连接超时"
         test_result["message"] = "请求超时（10秒），请检查网络连接或 API URL"
@@ -383,8 +427,10 @@ async def get_config_info() -> str:
     except Exception as e:
         test_result["status"] = "❌ 测试失败"
         test_result["message"] = f"未知错误: {str(e)}"
-    config_info["connection_test"] = test_result
+    return test_result
 
+
+async def _probe_default_model() -> dict:
     default_model_health = {"model": "未配置", "status": "未测试", "response_time_ms": 0, "message": ""}
     try:
         api_url = config.grok_api_url
@@ -392,35 +438,30 @@ async def get_config_info() -> str:
         model = config.grok_model
         default_model_health["model"] = model
         probe_payload = {"model": model, "stream": False, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
-        _start = time.time()
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{api_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=probe_payload,
-            )
-            default_model_health["response_time_ms"] = round((time.time() - _start) * 1000, 2)
-            text = resp.text or ""
-            if "No available accounts" in text or "rate_limit_exceeded" in text:
-                default_model_health["status"] = "❌ 中转站无账号"
-                default_model_health["message"] = "该模型在中转站没有可用账号，建议切换其他模型"
-            elif resp.status_code == 200:
-                default_model_health["status"] = "✅ 可用"
-                default_model_health["message"] = "1-token 探针通过"
-            else:
-                default_model_health["status"] = f"⚠️ HTTP {resp.status_code}"
-                default_model_health["message"] = text[:200]
+        start_time = time.monotonic()
+        resp = await get_client().post(
+            f"{api_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=probe_payload,
+            timeout=10.0,
+        )
+        default_model_health["response_time_ms"] = round((time.monotonic() - start_time) * 1000, 2)
+        text = resp.text or ""
+        if "No available accounts" in text or "rate_limit_exceeded" in text:
+            default_model_health["status"] = "❌ 中转站无账号"
+            default_model_health["message"] = "该模型在中转站没有可用账号，建议切换其他模型"
+        elif resp.status_code == 200:
+            default_model_health["status"] = "✅ 可用"
+            default_model_health["message"] = "1-token 探针通过"
+        else:
+            default_model_health["status"] = f"⚠️ HTTP {resp.status_code}"
+            default_model_health["message"] = text[:200]
     except httpx.TimeoutException:
         default_model_health["status"] = "❌ 探针超时"
     except Exception as e:
         default_model_health["status"] = "❌ 探针失败"
         default_model_health["message"] = str(e)[:200]
-    config_info["default_model_health"] = default_model_health
-
-    config_info["tavily_key_cooldown"] = cooldown_status(config.tavily_api_keys)
-    config_info["firecrawl_key_cooldown"] = cooldown_status(config.firecrawl_api_keys)
-
-    return json.dumps(config_info, ensure_ascii=False, indent=2)
+    return default_model_health
 
 
 @mcp.tool(
@@ -444,7 +485,6 @@ async def get_config_info() -> str:
 async def switch_model(
     model: Annotated[str, "Model ID to switch to (e.g., 'grok-4.3-console', 'grok-4.20-fast')."]
 ) -> str:
-    import json
     try:
         previous_model = config.grok_model
         config.set_model(model)
@@ -483,7 +523,6 @@ async def switch_model(
 async def toggle_builtin_tools(
     action: Annotated[str, "Action to perform: 'on' (block built-in), 'off' (allow built-in), or 'status' (check current state)."] = "status"
 ) -> str:
-    import json
     root = Path.cwd()
     while root != root.parent and not (root / ".git").exists():
         root = root.parent

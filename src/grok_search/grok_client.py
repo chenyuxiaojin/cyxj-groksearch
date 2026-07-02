@@ -8,6 +8,7 @@ from tenacity.wait import wait_base
 from .prompts import search_prompt
 from .logger import log_info
 from .config import config
+from .http_client import get_client
 
 
 def get_local_time_info() -> str:
@@ -153,19 +154,20 @@ class GrokClient:
 
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
-                retry=retry_if_exception(_is_retryable_exception),
-                reraise=True,
-            ):
-                with attempt:
-                    async with client.stream(
-                        "POST",
-                        f"{self.api_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    ) as response:
-                        response.raise_for_status()
-                        return await self._parse_streaming_response(response, ctx)
+        client = get_client()
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(config.retry_max_attempts + 1),
+            wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
+            retry=retry_if_exception(_is_retryable_exception),
+            reraise=True,
+        ):
+            with attempt:
+                async with client.stream(
+                    "POST",
+                    f"{self.api_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                ) as response:
+                    response.raise_for_status()
+                    return await self._parse_streaming_response(response, ctx)
