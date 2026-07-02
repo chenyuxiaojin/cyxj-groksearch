@@ -95,6 +95,7 @@ claude mcp add-json grok-search --scope user '{
 | `TAVILY_API_URL` | — | `https://api.tavily.com` | Tavily 端点 |
 | `FIRECRAWL_API_KEYS` | — | — | Firecrawl key，逗号分隔；兼容回落 `FIRECRAWL_SCREENSHOT_API_KEYS` |
 | `FIRECRAWL_API_URL` | — | `https://api.firecrawl.dev/v2` | Firecrawl 端点 |
+| `GROK_FETCH_HEDGE_DELAY` | — | `8` | `web_fetch` 对冲延迟（秒）：Tavily 超时未返回则并行追加 Firecrawl；设 `0` 为始终并发 |
 | `GROK_DEBUG` | — | `false` | 调试日志开关 |
 | `GROK_LOG_LEVEL` / `GROK_LOG_DIR` | — | `INFO` / `logs` | 日志级别/目录 |
 | `GROK_RETRY_MAX_ATTEMPTS` / `GROK_RETRY_MULTIPLIER` / `GROK_RETRY_MAX_WAIT` | — | `3` / `1` / `10` | 重试策略 |

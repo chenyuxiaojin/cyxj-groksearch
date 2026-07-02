@@ -59,6 +59,15 @@ class Config:
         return int(os.getenv("GROK_RETRY_MAX_WAIT", "10"))
 
     @property
+    def fetch_hedge_delay(self) -> float:
+        """web_fetch 对冲延迟（秒）：Tavily 超过该时长未返回时并行追加 Firecrawl。
+        设为 0 表示两者始终并发（更快但多耗 Firecrawl 额度）。"""
+        try:
+            return max(0.0, float(os.getenv("GROK_FETCH_HEDGE_DELAY", "8")))
+        except ValueError:
+            return 8.0
+
+    @property
     def grok_api_url(self) -> str:
         url = os.getenv("GROK_API_URL")
         if not url:

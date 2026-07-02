@@ -95,6 +95,7 @@ The `.env` file defaults to the script's own directory. Override with `GROK_SEAR
 | `TAVILY_API_URL` | No | `https://api.tavily.com` | Tavily endpoint |
 | `FIRECRAWL_API_KEYS` | No | — | Comma-separated Firecrawl keys; fallback: `FIRECRAWL_SCREENSHOT_API_KEYS` |
 | `FIRECRAWL_API_URL` | No | `https://api.firecrawl.dev/v2` | Firecrawl endpoint |
+| `GROK_FETCH_HEDGE_DELAY` | No | `8` | `web_fetch` hedge delay in seconds: if Tavily hasn't answered in time, Firecrawl is raced in parallel; `0` means always race both |
 | `GROK_DEBUG` | No | `false` | Enable debug logging |
 | `GROK_LOG_LEVEL` / `GROK_LOG_DIR` | No | `INFO` / `logs` | Log level / log directory |
 | `GROK_RETRY_MAX_ATTEMPTS` / `GROK_RETRY_MULTIPLIER` / `GROK_RETRY_MAX_WAIT` | No | `3` / `1` / `10` | Retry policy |
