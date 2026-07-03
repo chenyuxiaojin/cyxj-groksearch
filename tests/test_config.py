@@ -3,7 +3,7 @@ import pytest
 
 
 @pytest.fixture
-def fresh_config(monkeypatch):
+def fresh_config(monkeypatch, tmp_path):
     """每个测试拿到一个干净的 Config 单例（清掉所有相关环境变量）。"""
     for var in [
         "GROK_API_URL", "GROK_API_KEY", "GROK_MODEL",
@@ -16,7 +16,10 @@ def fresh_config(monkeypatch):
     importlib.reload(config_mod)
     # 单例可能已缓存，强制重建
     config_mod.Config._instance = None
-    return config_mod.Config()
+    cfg = config_mod.Config()
+    # 隔离本机 ~/.config/grok-search/config.json（switch_model 会持久化 model，污染默认值断言）
+    cfg._config_file = tmp_path / "config.json"
+    return cfg
 
 
 def test_grok_url_and_key_required(fresh_config):
