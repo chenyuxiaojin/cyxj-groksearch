@@ -151,6 +151,11 @@ uv run --extra dev pytest -v        # run tests
 uv run --directory . grok-search    # start local stdio server
 ```
 
+## Acknowledgments
+
+- Original project: [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch) by @DaiSun — [original post on LINUX DO](https://linux.do/t/topic/1674101)
+- Thanks to the [LINUX DO](https://linux.do) community, where this project was first discovered and shared
+
 ## License
 
 [MIT License](LICENSE) — a de-branded rewrite of [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch).

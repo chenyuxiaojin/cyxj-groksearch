@@ -151,6 +151,11 @@ uv run --extra dev pytest -v        # 跑测试
 uv run --directory . grok-search    # 本地 stdio 调试
 ```
 
+## 致谢
+
+- 原版项目：[GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch)（孙佬 @DaiSun）——[LINUX DO 原帖](https://linux.do/t/topic/1674101)
+- 感谢 [LINUX DO](https://linux.do) 社区，本项目源于站内佬友的分享
+
 ## 许可证
 
 [MIT License](LICENSE) — 基于 [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch) 重写。
