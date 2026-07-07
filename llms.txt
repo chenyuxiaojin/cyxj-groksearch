@@ -7,8 +7,8 @@ cyxj-groksearch exposes 8 MCP tools: web_search (Grok AI search with optional ex
 All three APIs (Grok, Tavily, Firecrawl) support comma-separated multi-key pools with 30-minute cooldown failover. Only GROK_API_URL and GROK_API_KEY are required; Tavily and Firecrawl are optional.
 
 ## Documentation
-- [README (English)](README.md): Full English documentation — installation, tool reference table, environment variables, FAQ, and comparison with alternative MCP servers.
-- [中文文档 (README.zh-CN.md)](README.zh-CN.md): 完整中文文档，含安装方式、逐工具说明、环境变量表、FAQ 及与同类工具对比。
+- [中文文档 (README.md)](README.md): 完整中文文档（默认），含安装方式、逐工具说明、环境变量表、FAQ 及与同类工具对比。
+- [README (English)](README.en.md): Full English documentation — installation, tool reference table, environment variables, FAQ, and comparison with alternative MCP servers.
 
 ## Links
 - Repository: https://github.com/chenyuxiaojin/cyxj-groksearch

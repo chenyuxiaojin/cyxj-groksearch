@@ -1,55 +1,55 @@
-**English** | [中文文档](README.zh-CN.md)
+中文 | [English](README.en.md)
 
 # cyxj-groksearch
 
-> cyxj-groksearch is an MCP server that gives Claude Code real-time web access — Grok AI search, Tavily fetch/map, and Firecrawl screenshots, with multi-key failover.
+> 为 Claude Code 提供实时联网能力的 MCP 服务器：Grok AI 搜索、Tavily 高保真抓取/站点映射、Firecrawl 网页截图，内置多 key 轮询与自动 failover。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![MCP](https://img.shields.io/badge/protocol-MCP-purple)](https://modelcontextprotocol.io/)
 
-## Why this instead of Claude Code's built-in WebSearch?
+## 为什么用它，而不是 Claude Code 内置 WebSearch？
 
-Claude Code ships with its own `WebSearch` and `WebFetch` tools. This MCP server is not a replacement for those — it sits alongside them and offers capabilities the built-ins lack:
+Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是补充——它提供内置工具做不到的能力：
 
-- **Multi-source cross-verification** — `web_search` can fan out to Tavily/Firecrawl in parallel (`extra_sources` param) and merge all results before returning, so Claude can compare independently indexed sources in a single call.
-- **Grok relay endpoint** — route AI search traffic to any OpenAI-compatible endpoint (official Grok API, self-hosted mirrors, rate-limit bypass relays). The built-ins cannot be redirected.
-- **Full-text extraction** — `web_fetch` retrieves raw page content via Tavily Extract (with Firecrawl as fallback), returning 16 KB+ of structured Markdown rather than a short snippet. Useful for fact-pinning against primary sources.
-- **Force-routing control** — `toggle_builtin_tools` writes `WebSearch`/`WebFetch` into the project's `.claude/settings.json` deny list, so all web traffic goes through this MCP exclusively. You can flip it back at any time.
-- **Multi-key failover pool** — each API (Grok / Tavily / Firecrawl) supports comma-separated key lists with automatic 30-minute cooldown on errors, enabling uninterrupted operation across rate-limit events.
+- **多源交叉验证** — `web_search` 可通过 `extra_sources` 参数同步向 Tavily/Firecrawl 并行取独立信源，合并后一次返回，Claude 可在单次调用内对比多方索引结果。
+- **Grok 中转路由** — 可将 AI 搜索流量指向任意 OpenAI 兼容端点（官方 Grok API、自建镜像、中转站）。内置工具无法重定向。
+- **原文全文抓取** — `web_fetch` 通过 Tavily Extract（Firecrawl 降级）获取 16 KB+ 结构化 Markdown 原文，而非摘要片段，适合钉死一手事实。
+- **强制路由控制** — `toggle_builtin_tools` 把 `WebSearch`/`WebFetch` 写入项目 `.claude/settings.json` 黑名单，所有联网请求强制走本 MCP。可随时撤销。
+- **多 key 轮询池** — Grok / Tavily / Firecrawl 三个 API 均支持逗号分隔多 key，遇到限速/报错自动 30 分钟 cooldown，无缝切下一个 key。
 
-## Features
+## 功能特性
 
-- 8 MCP tools covering search, fetch, screenshot, site mapping, and runtime control
-- Grok AI search with session-scoped source caching
-- Tavily Extract as primary fetcher; Firecrawl as automatic fallback
-- Firecrawl JS-rendered screenshot (returns signed GCS URL)
-- Single key pool shared across `web_fetch` fallback, `extra_sources`, and `web_screenshot`
-- Built-in connection diagnostics: config check + 1-token model probe
-- Persistent model switching via `~/.config/grok-search/config.json`
-- Launcher script that auto-aggregates all `TAVILY_API_KEY*` env vars into a multi-key pool
+- 8 个 MCP 工具，覆盖搜索、抓取、截图、站点映射、运行时控制
+- Grok AI 搜索 + session 级信源缓存
+- Tavily Extract 为主抓取，Firecrawl 自动降级
+- Firecrawl JS 渲染截图（返回签名 GCS URL）
+- 同一 Firecrawl key 池同时供 `web_fetch` 降级、`extra_sources` 补信源、`web_screenshot` 三用
+- 内置连接诊断：配置检查 + 1-token 模型探针
+- 通过 `~/.config/grok-search/config.json` 持久化默认模型
+- launcher 脚本自动聚合所有 `TAVILY_API_KEY*` 变量成多 key 轮询池
 
-## Tools
+## 工具列表
 
-| Tool | Description | Key Parameters |
-|------|-------------|----------------|
-| `web_search` | AI-powered search via Grok; caches sources, returns `session_id` + `content` + `sources_count` | `query`, `platform` (optional focus), `model` (per-call override), `extra_sources` (0–N extra results from Tavily/Firecrawl) |
-| `get_sources` | Retrieve the full source list from a previous `web_search` call | `session_id` |
-| `web_fetch` | Extract full-text content from a URL as Markdown; Tavily primary → Firecrawl fallback | `url` |
-| `web_screenshot` | Capture a JS-rendered screenshot via Firecrawl; returns a signed PNG URL | `url`, `full_page` (bool, default false) |
-| `web_map` | Traverse a site's link graph and return a URL structure map (Tavily) | `url`, `instructions`, `max_depth`, `max_breadth`, `limit`, `timeout` |
-| `get_config_info` | Show current configuration, run connection test, list available models, show key cooldown status | — |
-| `switch_model` | Change the default Grok model; persisted to `~/.config/grok-search/config.json` | `model` |
-| `toggle_builtin_tools` | Add/remove `WebSearch` and `WebFetch` from the project's deny list | `action` (`"on"` / `"off"` / `"status"`) |
+| 工具 | 作用 | 关键参数 |
+|------|------|---------|
+| `web_search` | Grok AI 搜索；缓存信源，返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数） |
+| `get_sources` | 按 `session_id` 取上次 `web_search` 缓存的完整信源列表 | `session_id` |
+| `web_fetch` | 抓取 URL 全文，以 Markdown 返回；Tavily 主抓取 → Firecrawl 降级 | `url` |
+| `web_screenshot` | Firecrawl JS 渲染截图，返回签名 PNG URL | `url`、`full_page`（bool，默认 false） |
+| `web_map` | 遍历站点链接图，返回 URL 结构清单（Tavily） | `url`、`instructions`、`max_depth`、`max_breadth`、`limit`、`timeout` |
+| `get_config_info` | 显示配置、执行连接测试、列出可用模型、查看 key cooldown 状态 | — |
+| `switch_model` | 切换默认 Grok 模型，持久化到 `~/.config/grok-search/config.json` | `model` |
+| `toggle_builtin_tools` | 把 `WebSearch`/`WebFetch` 加入/移出项目 deny 名单 | `action`（`"on"` / `"off"` / `"status"`） |
 
-## Install & Setup
+## 安装与配置
 
-### Prerequisites
+### 前置条件
 
-- [uv](https://docs.astral.sh/uv/) — Python package manager
+- [uv](https://docs.astral.sh/uv/) — Python 包管理器
 - [Claude Code](https://claude.ai/code)
 
-### Option A — Install from GitHub (recommended)
+### 方式 A — 从 GitHub 安装（推荐）
 
-Install directly with `uvx` and register it as an MCP server. Only `GROK_API_URL` and `GROK_API_KEY` are required; Tavily and Firecrawl are optional.
+用 `uvx` 从 GitHub 直接安装并注册 MCP。只有 `GROK_API_URL` 和 `GROK_API_KEY` 必填，Tavily/Firecrawl 可选。
 
 ```bash
 claude mcp add-json grok-search --scope user '{
@@ -65,97 +65,97 @@ claude mcp add-json grok-search --scope user '{
 }'
 ```
 
-Verify: `claude mcp list` should show `grok-search ✓`.
+验证：`claude mcp list` 显示 `grok-search ✓` 即成功。
 
-### Option B — Local source with launcher script (for development)
+### 方式 B — 本地源码 + launcher 脚本（开发调试）
 
-Clone the repo and point Claude Code at the launcher script. The launcher loads a `.env` file and auto-aggregates all `TAVILY_API_KEY*` variables into the multi-key pool, then starts the server from local source using `uv run`.
+克隆仓库后，在 Claude Code MCP 注册里把 `command` 指向 launcher 脚本。launcher 会加载 `.env`、自动聚合所有 `TAVILY_API_KEY*` 变量到轮询池，再用 `uv run` 从本地源码启动（改代码即时生效）。
 
 ```json
 {
   "grok-search": {
     "type": "stdio",
-    "command": "/absolute/path/to/GrokSearch/grok-search-launcher.sh",
+    "command": "/绝对路径/GrokSearch/grok-search-launcher.sh",
     "args": [],
-    "env": { "GROK_SEARCH_ENV_FILE": "/absolute/path/to/your/.env" }
+    "env": { "GROK_SEARCH_ENV_FILE": "/绝对路径/你的/.env" }
   }
 }
 ```
 
-The `.env` file defaults to the script's own directory. Override with `GROK_SEARCH_ENV_FILE`. See [`.env.example`](.env.example) for all available variables.
+`.env` 默认取脚本同目录，可用 `GROK_SEARCH_ENV_FILE` 覆盖。参考 [`.env.example`](.env.example) 查看所有变量。
 
-## Environment Variables
+## 环境变量
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GROK_API_URL` | Yes | — | OpenAI-compatible Grok endpoint (must include `/v1`) |
-| `GROK_API_KEY` | Yes | — | Grok API key |
-| `GROK_MODEL` | No | `grok-4.3-console` | Default model (also overridable via `~/.config/grok-search/config.json`) |
-| `TAVILY_API_KEYS` | No | — | Comma-separated Tavily keys; also accepts single `TAVILY_API_KEY` |
-| `TAVILY_API_URL` | No | `https://api.tavily.com` | Tavily endpoint |
-| `FIRECRAWL_API_KEYS` | No | — | Comma-separated Firecrawl keys; fallback: `FIRECRAWL_SCREENSHOT_API_KEYS` |
-| `FIRECRAWL_API_URL` | No | `https://api.firecrawl.dev/v2` | Firecrawl endpoint |
-| `GROK_FETCH_HEDGE_DELAY` | No | `8` | `web_fetch` hedge delay in seconds: if Tavily hasn't answered in time, Firecrawl is raced in parallel; `0` means always race both |
-| `GROK_DEBUG` | No | `false` | Enable debug logging |
-| `GROK_LOG_LEVEL` / `GROK_LOG_DIR` | No | `INFO` / `logs` | Log level / log directory |
-| `GROK_RETRY_MAX_ATTEMPTS` / `GROK_RETRY_MULTIPLIER` / `GROK_RETRY_MAX_WAIT` | No | `3` / `1` / `10` | Retry policy |
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `GROK_API_URL` | ✅ | — | OpenAI 兼容 Grok 端点（含 `/v1`） |
+| `GROK_API_KEY` | ✅ | — | Grok API key |
+| `GROK_MODEL` | — | `grok-4.3-console` | 默认模型（也可被 `~/.config/grok-search/config.json` 覆盖） |
+| `TAVILY_API_KEYS` | — | — | Tavily key，逗号分隔多 key；也支持单数 `TAVILY_API_KEY` |
+| `TAVILY_API_URL` | — | `https://api.tavily.com` | Tavily 端点 |
+| `FIRECRAWL_API_KEYS` | — | — | Firecrawl key，逗号分隔；兼容回落 `FIRECRAWL_SCREENSHOT_API_KEYS` |
+| `FIRECRAWL_API_URL` | — | `https://api.firecrawl.dev/v2` | Firecrawl 端点 |
+| `GROK_FETCH_HEDGE_DELAY` | — | `8` | `web_fetch` 对冲延迟（秒）：Tavily 超时未返回则并行追加 Firecrawl；设 `0` 为始终并发 |
+| `GROK_DEBUG` | — | `false` | 调试日志开关 |
+| `GROK_LOG_LEVEL` / `GROK_LOG_DIR` | — | `INFO` / `logs` | 日志级别/目录 |
+| `GROK_RETRY_MAX_ATTEMPTS` / `GROK_RETRY_MULTIPLIER` / `GROK_RETRY_MAX_WAIT` | — | `3` / `1` / `10` | 重试策略 |
 
-> Firecrawl key resolution order: `FIRECRAWL_API_KEYS` → `FIRECRAWL_API_KEY` → `FIRECRAWL_SCREENSHOT_API_KEYS` → `FIRECRAWL_SCREENSHOT_API_KEY`.
+> Firecrawl key 读取优先级：`FIRECRAWL_API_KEYS` → `FIRECRAWL_API_KEY` → `FIRECRAWL_SCREENSHOT_API_KEYS` → `FIRECRAWL_SCREENSHOT_API_KEY`
 
-## Force-routing all web traffic here
+## 强制联网走本工具
 
-After installation, tell Claude: *"Call toggle_builtin_tools with action=on"*. This writes `WebSearch` and `WebFetch` into the current project's `.claude/settings.json` deny list, so all web requests go through this MCP exclusively. Run with `action=off` to restore Claude Code's built-in tools.
+安装后在对话里说「调用 toggle_builtin_tools，action=on」。这会把 `WebSearch`、`WebFetch` 写入当前项目 `.claude/settings.json` 的 deny 列表，所有联网请求强制路由到本 MCP。用 `action=off` 可恢复内置工具。
 
-## Compared to alternatives
+## 与同类工具对比
 
-| | cyxj-groksearch | Tavily Official MCP | Firecrawl Official MCP | Brave Search MCP | Exa MCP | Claude Code built-in WebSearch |
+| | cyxj-groksearch | Tavily 官方 MCP | Firecrawl 官方 MCP | Brave Search MCP | Exa MCP | Claude Code 内置 WebSearch |
 |---|---|---|---|---|---|---|
-| AI search (Grok) | Yes | No | No | No | No | Yes (via Claude) |
-| Full-text fetch | Yes (Tavily + Firecrawl fallback) | Partial | Yes | No | Yes | Snippet only |
-| Site map | Yes | No | Yes | No | No | No |
-| JS screenshot | Yes (Firecrawl) | No | Yes | No | No | No |
-| Multi-key failover | Yes (all APIs) | No | No | No | No | N/A |
-| Force-routing control | Yes (`toggle_builtin_tools`) | No | No | No | No | N/A |
-| Session source cache | Yes (`get_sources`) | No | No | No | No | No |
-| Relay endpoint support | Yes (any OpenAI-compatible URL) | No | No | No | No | No |
+| AI 搜索（Grok） | 有 | 无 | 无 | 无 | 无 | 有（Claude 内置） |
+| 全文抓取 | 有（Tavily + Firecrawl 降级） | 部分 | 有 | 无 | 有 | 摘要片段 |
+| 站点结构映射 | 有 | 无 | 有 | 无 | 无 | 无 |
+| JS 截图 | 有（Firecrawl） | 无 | 有 | 无 | 无 | 无 |
+| 多 key failover | 有（三个 API 均支持） | 无 | 无 | 无 | 无 | N/A |
+| 强制路由控制 | 有（toggle_builtin_tools） | 无 | 无 | 无 | 无 | N/A |
+| session 信源缓存 | 有（get_sources） | 无 | 无 | 无 | 无 | 无 |
+| 中转端点支持 | 有（任意 OpenAI 兼容 URL） | 无 | 无 | 无 | 无 | 无 |
 
 ## FAQ
 
-**Can I use this without Tavily or Firecrawl?**
-Yes. Only `GROK_API_URL` and `GROK_API_KEY` are required. Without Tavily, `web_fetch` and `web_map` return a configuration notice. Without Firecrawl, `web_screenshot` returns a configuration notice, and Firecrawl fallback in `web_fetch` is skipped.
+**不配 Tavily / Firecrawl 能用吗？**
+能。只有 `GROK_API_URL` 和 `GROK_API_KEY` 是必填项。不配 Tavily，`web_fetch` 和 `web_map` 会返回配置提示。不配 Firecrawl，`web_screenshot` 返回配置提示，`web_fetch` 的 Firecrawl 降级路径跳过。
 
-**How is this different from Claude Code's built-in WebSearch, and how do I force traffic here?**
-The built-in `WebSearch` is Claude-managed and cannot be redirected to a custom endpoint. This MCP routes to your own Grok endpoint and adds multi-source aggregation, full-text fetch, and key failover. To force all web traffic here, call `toggle_builtin_tools` with `action="on"`. To restore built-ins, use `action="off"`.
+**与内置 WebSearch 的区别是什么？怎么强制走本工具？**
+内置 `WebSearch` 由 Claude 托管，无法重定向到自定义端点。本 MCP 路由到你自己的 Grok 端点，并增加多源聚合、全文抓取和 key failover。强制路由：调用 `toggle_builtin_tools` 设 `action="on"`；恢复内置：设 `action="off"`。
 
-**Which Grok endpoints are supported?**
-Any OpenAI-compatible endpoint that exposes `/v1/chat/completions` and `/v1/models`. This includes the official `api.x.ai`, self-hosted mirrors, and commercial relay services. Set `GROK_API_URL` to the base URL including `/v1`.
+**支持哪些 Grok 端点？**
+任意暴露了 `/v1/chat/completions` 和 `/v1/models` 的 OpenAI 兼容端点，包括官方 `api.x.ai`、自建镜像和商业中转站。`GROK_API_URL` 填含 `/v1` 的基础 URL。
 
-**How does multi-key failover work?**
-Each API (Grok, Tavily, Firecrawl) accepts a comma-separated list of keys. The server rotates through them round-robin. When a key fails (rate limit or network error), it enters a 30-minute cooldown and is skipped. Check current cooldown state with `get_config_info`.
+**多 key failover 怎么工作？**
+每个 API（Grok、Tavily、Firecrawl）都接受逗号分隔的多 key 列表，服务器按轮询顺序使用。某个 key 报错（限速或网络错误）后进入 30 分钟 cooldown，期间自动跳过。用 `get_config_info` 可查看当前 cooldown 状态。
 
-**How do I debug connection issues?**
-Call `get_config_info`. It runs a connectivity check to `/models`, sends a 1-token probe to verify the default model is available, and reports cooldown status for all key pools.
+**连接有问题怎么排查？**
+调用 `get_config_info`。它会向 `/models` 发连接测试请求、发送 1-token 探针验证默认模型是否可用，并报告所有 key 池的 cooldown 状态。
 
-## Requirements
+## 环境要求
 
 - Python 3.10+
-- `fastmcp >= 2.3.0`, `mcp[cli] >= 1.21.2`, `httpx[socks] >= 0.28.0`, `tenacity >= 8.0.0`
-- `uv` for installation and local development
+- `fastmcp >= 2.3.0`、`mcp[cli] >= 1.21.2`、`httpx[socks] >= 0.28.0`、`tenacity >= 8.0.0`
+- `uv`（用于安装和本地开发）
 
-## Development
+## 开发
 
 ```bash
 cd GrokSearch
 uv sync
-uv run --extra dev pytest -v        # run tests
-uv run --directory . grok-search    # start local stdio server
+uv run --extra dev pytest -v        # 跑测试
+uv run --directory . grok-search    # 本地 stdio 调试
 ```
 
-## Acknowledgments
+## 致谢
 
-- Original project: [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch) by @DaiSun — [original post on LINUX DO](https://linux.do/t/topic/1674101)
-- Thanks to the [LINUX DO](https://linux.do) community, where this project was first discovered and shared
+- 原版项目：[GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch)（孙佬 @DaiSun）——[LINUX DO 原帖](https://linux.do/t/topic/1674101)
+- 感谢 [LINUX DO](https://linux.do) 社区，本项目源于站内佬友的分享
 
-## License
+## 许可证
 
-[MIT License](LICENSE) — a de-branded rewrite of [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch).
+[MIT License](LICENSE) — 基于 [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch) 重写。
