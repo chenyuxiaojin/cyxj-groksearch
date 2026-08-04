@@ -31,7 +31,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 
 | 工具 | 作用 | 关键参数 |
 |------|------|---------|
-| `web_search` | Grok AI 搜索；缓存信源，返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数） |
+| `web_search` | Grok AI 搜索；缓存信源，返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数，默认 2，设 0 关闭） |
 | `get_sources` | 按 `session_id` 取上次 `web_search` 缓存的完整信源列表 | `session_id` |
 | `web_fetch` | 抓取 URL 全文，以 Markdown 返回；Tavily 主抓取 → Firecrawl 降级 | `url` |
 | `web_screenshot` | Firecrawl JS 渲染截图，返回签名 PNG URL | `url`、`full_page`（bool，默认 false） |
@@ -90,7 +90,7 @@ claude mcp add-json grok-search --scope user '{
 |------|------|--------|------|
 | `GROK_API_URL` | ✅ | — | OpenAI 兼容 Grok 端点（含 `/v1`） |
 | `GROK_API_KEY` | ✅ | — | Grok API key |
-| `GROK_MODEL` | — | `grok-4.3-console` | 默认模型（也可被 `~/.config/grok-search/config.json` 覆盖） |
+| `GROK_MODEL` | — | `grok-4.3-fast` | 默认模型（也可被 `~/.config/grok-search/config.json` 覆盖） |
 | `TAVILY_API_KEYS` | — | — | Tavily key，逗号分隔多 key；也支持单数 `TAVILY_API_KEY` |
 | `TAVILY_API_URL` | — | `https://api.tavily.com` | Tavily 端点 |
 | `FIRECRAWL_API_KEYS` | — | — | Firecrawl key，逗号分隔；兼容回落 `FIRECRAWL_SCREENSHOT_API_KEYS` |

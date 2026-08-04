@@ -144,7 +144,7 @@ async def web_search(
     query: Annotated[str, "Clear, self-contained natural-language search query."],
     platform: Annotated[str, "Target platform to focus on (e.g., 'Twitter', 'GitHub', 'Reddit'). Leave empty for general web search."] = "",
     model: Annotated[str, "Optional model ID for this request only. This value is used ONLY when user explicitly provided."] = "",
-    extra_sources: Annotated[int, "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 0."] = 0,
+    extra_sources: Annotated[int, "Number of additional reference results from Tavily/Firecrawl for cross-validation. Default 2. Set 0 only when the user explicitly wants Grok-only or to save quota."] = 2,
 ) -> dict:
     session_id = new_session_id()
     try:
@@ -483,7 +483,7 @@ async def _probe_default_model() -> dict:
     meta={"version": "1.3.0"},
 )
 async def switch_model(
-    model: Annotated[str, "Model ID to switch to (e.g., 'grok-4.3-console', 'grok-4.20-fast')."]
+    model: Annotated[str, "Model ID to switch to (e.g., 'grok-4.3-fast'). Verify availability via get_config_info first."]
 ) -> str:
     try:
         previous_model = config.grok_model

@@ -68,9 +68,9 @@ def test_firecrawl_empty_when_unset(fresh_config):
     assert fresh_config.firecrawl_api_key is None
 
 
-def test_default_model_is_console(fresh_config):
+def test_default_model_is_fast(fresh_config):
     fresh_config._cached_model = None
-    assert fresh_config.grok_model == "grok-4.3-console"
+    assert fresh_config.grok_model == "grok-4.3-fast"
 
 
 def test_guda_vars_are_ignored_no_derivation(fresh_config, monkeypatch):

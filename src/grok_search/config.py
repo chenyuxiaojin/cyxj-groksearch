@@ -5,7 +5,7 @@ from pathlib import Path
 
 class Config:
     _instance = None
-    _DEFAULT_MODEL = "grok-4.3-console"
+    _DEFAULT_MODEL = "grok-4.3-fast"
 
     def __new__(cls):
         if cls._instance is None:
