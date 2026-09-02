@@ -34,8 +34,8 @@ if [[ ${#keys[@]} -gt 0 ]]; then
   IFS="$old_ifs"
 fi
 
-# 3. 确保能找到 uv/uvx
-export PATH="$HOME/.local/bin:$PATH"
+# 3. 确保能找到 uv/uvx，以及本机 grok CLI（Grok Build，web_search 的默认后端）
+export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"
 
 # 4. 启动 grok-search（从本仓库源码的 .venv）
 #    用 uv run --directory 而不是 uvx：直接用项目 .venv 跑，源码改了立即生效

@@ -1,6 +1,13 @@
 import os
 import json
+import shutil
 from pathlib import Path
+
+# 子进程标记：grok CLI 会把 Claude Code 里注册的 MCP（含本服务）一起挂载，
+# 嵌套启动的 grok-search 看到这个环境变量就不再走 CLI 后端，避免无限套娃。
+NESTED_ENV = "GROK_SEARCH_NESTED"
+
+_GROK_BACKENDS = ("auto", "cli", "api")
 
 
 class Config:
@@ -66,6 +73,76 @@ class Config:
             return max(0.0, float(os.getenv("GROK_FETCH_HEDGE_DELAY", "8")))
         except ValueError:
             return 8.0
+
+    # ---------- Grok 后端选择：本机 CLI vs OpenAI 兼容 API ----------
+
+    @property
+    def grok_backend(self) -> str:
+        """GROK_BACKEND = auto（默认，有 grok 命令就用 CLI，否则用 API）| cli | api"""
+        value = (os.getenv("GROK_BACKEND") or "auto").strip().lower()
+        return value if value in _GROK_BACKENDS else "auto"
+
+    @property
+    def grok_cli_path(self) -> str | None:
+        """grok CLI 可执行文件：GROK_CLI_PATH → PATH 里的 grok → ~/.grok/bin/grok / ~/.local/bin/grok"""
+        explicit = os.getenv("GROK_CLI_PATH")
+        if explicit:
+            candidate = Path(explicit).expanduser()
+            return str(candidate) if candidate.is_file() else None
+        found = shutil.which("grok")
+        if found:
+            return found
+        for candidate in (Path.home() / ".grok" / "bin" / "grok", Path.home() / ".local" / "bin" / "grok"):
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    @property
+    def grok_cli_model(self) -> str:
+        """传给 grok CLI 的 --model；留空用 CLI 自己的默认模型（~/.grok/config.toml）。"""
+        return (os.getenv("GROK_CLI_MODEL") or "").strip()
+
+    @property
+    def grok_cli_effort(self) -> str:
+        """传给 grok CLI 的 --reasoning-effort（low/medium/high/xhigh）。
+        默认 medium：搜索场景时间优先，xhigh 一次要两分钟。设为 default 则不传，交给 CLI 自己的配置。"""
+        value = (os.getenv("GROK_CLI_EFFORT") or "medium").strip().lower()
+        return "" if value in ("default", "cli", "none") else value
+
+    @property
+    def grok_cli_timeout(self) -> float:
+        try:
+            return max(10.0, float(os.getenv("GROK_CLI_TIMEOUT", "180")))
+        except ValueError:
+            return 180.0
+
+    @property
+    def grok_cli_nested(self) -> bool:
+        return os.getenv(NESTED_ENV, "").lower() in ("1", "true", "yes")
+
+    @property
+    def grok_cli_workdir(self) -> Path:
+        """grok CLI 的工作目录：固定一个空目录，别让它读到用户项目里的文件。"""
+        workdir = self.config_file.parent / "cli-workdir"
+        workdir.mkdir(parents=True, exist_ok=True)
+        return workdir
+
+    @property
+    def grok_api_configured(self) -> bool:
+        return bool(os.getenv("GROK_API_URL")) and bool(os.getenv("GROK_API_KEY"))
+
+    def resolve_grok_backend(self) -> str:
+        """实际生效的后端：'cli' | 'api' | 'none'。"""
+        mode = self.grok_backend
+        cli_ok = bool(self.grok_cli_path) and not self.grok_cli_nested
+        api_ok = self.grok_api_configured
+        if mode == "cli":
+            return "cli" if cli_ok else "none"
+        if mode == "api":
+            return "api" if api_ok else "none"
+        if cli_ok:
+            return "cli"
+        return "api" if api_ok else "none"
 
     @property
     def grok_api_url(self) -> str:
@@ -194,6 +271,7 @@ class Config:
         return f"{key[:4]}{'*' * (len(key) - 8)}{key[-4:]}"
 
     def get_config_info(self) -> dict:
+        backend = self.resolve_grok_backend()
         try:
             api_url = self.grok_api_url
             api_key_masked = self._mask_api_key(self.grok_api_key)
@@ -201,9 +279,17 @@ class Config:
         except ValueError as e:
             api_url = "未配置"
             api_key_masked = "未配置"
-            config_status = f"❌ 配置错误: {str(e)}"
+            config_status = "✅ 配置完整（Grok 走本机 CLI，无需 API）" if backend == "cli" else f"❌ 配置错误: {str(e)}"
+        if backend == "none":
+            config_status = "❌ 没有可用的 Grok 后端：既找不到 grok 命令，也没配 GROK_API_URL/GROK_API_KEY"
 
         return {
+            "GROK_BACKEND": self.grok_backend,
+            "active_grok_backend": backend,
+            "GROK_CLI_PATH": self.grok_cli_path or "未找到",
+            "GROK_CLI_MODEL": self.grok_cli_model or "(CLI 默认)",
+            "GROK_CLI_EFFORT": self.grok_cli_effort or "(CLI 默认)",
+            "GROK_CLI_TIMEOUT": self.grok_cli_timeout,
             "GROK_API_URL": api_url,
             "GROK_API_KEY": api_key_masked,
             "GROK_MODEL": self.grok_model,

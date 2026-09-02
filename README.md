@@ -11,7 +11,7 @@
 Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是补充——它提供内置工具做不到的能力：
 
 - **多源交叉验证** — `web_search` 可通过 `extra_sources` 参数同步向 Tavily/Firecrawl 并行取独立信源，合并后一次返回，Claude 可在单次调用内对比多方索引结果。
-- **Grok 中转路由** — 可将 AI 搜索流量指向任意 OpenAI 兼容端点（官方 Grok API、自建镜像、中转站）。内置工具无法重定向。
+- **Grok 双后端** — 装了 xAI 的 [Grok Build CLI](https://docs.x.ai/grok-build)（`grok` 命令，grok.com 账号登录）就零 API key 直接用它联网搜索；没装则走任意 OpenAI 兼容端点（官方 Grok API、自建镜像、中转站）。内置工具无法重定向。
 - **原文全文抓取** — `web_fetch` 通过 Tavily Extract（Firecrawl 降级）获取 16 KB+ 结构化 Markdown 原文，而非摘要片段，适合钉死一手事实。
 - **强制路由控制** — `toggle_builtin_tools` 把 `WebSearch`/`WebFetch` 写入项目 `.claude/settings.json` 黑名单，所有联网请求强制走本 MCP。可随时撤销。
 - **多 key 轮询池** — Grok / Tavily / Firecrawl 三个 API 均支持逗号分隔多 key，遇到限速/报错自动 30 分钟 cooldown，无缝切下一个 key。
@@ -19,7 +19,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 ## 功能特性
 
 - 8 个 MCP 工具，覆盖搜索、抓取、截图、站点映射、运行时控制
-- Grok AI 搜索 + session 级信源缓存
+- Grok AI 搜索 + session 级信源缓存；后端自动选择：本机 `grok` CLI 优先，回落 OpenAI 兼容 API（`GROK_BACKEND` 可强制）
 - Tavily Extract 为主抓取，Firecrawl 自动降级
 - Firecrawl JS 渲染截图（返回签名 GCS URL）
 - 同一 Firecrawl key 池同时供 `web_fetch` 降级、`extra_sources` 补信源、`web_screenshot` 三用
@@ -31,7 +31,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 
 | 工具 | 作用 | 关键参数 |
 |------|------|---------|
-| `web_search` | Grok AI 搜索；缓存信源，返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数，默认 2，设 0 关闭） |
+| `web_search` | Grok AI 搜索（本机 `grok` CLI 或 API，自动选）；缓存信源（CLI 后端会把每次搜索命中的原始 URL 也存进去），返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数，默认 2，设 0 关闭） |
 | `get_sources` | 按 `session_id` 取上次 `web_search` 缓存的完整信源列表 | `session_id` |
 | `web_fetch` | 抓取 URL 全文，以 Markdown 返回；Tavily 主抓取 → Firecrawl 降级 | `url` |
 | `web_screenshot` | Firecrawl JS 渲染截图，返回签名 PNG URL | `url`、`full_page`（bool，默认 false） |
@@ -49,7 +49,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 
 ### 方式 A — 从 GitHub 安装（推荐）
 
-用 `uvx` 从 GitHub 直接安装并注册 MCP。只有 `GROK_API_URL` 和 `GROK_API_KEY` 必填，Tavily/Firecrawl 可选。
+用 `uvx` 从 GitHub 直接安装并注册 MCP。Grok 后端二选一：本机装了 `grok` 命令（Grok Build CLI，已登录）就什么都不用填；否则填 `GROK_API_URL` 和 `GROK_API_KEY`。Tavily/Firecrawl 可选。
 
 ```bash
 claude mcp add-json grok-search --scope user '{
@@ -88,8 +88,13 @@ claude mcp add-json grok-search --scope user '{
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
-| `GROK_API_URL` | ✅ | — | OpenAI 兼容 Grok 端点（含 `/v1`） |
-| `GROK_API_KEY` | ✅ | — | Grok API key |
+| `GROK_BACKEND` | — | `auto` | Grok 后端：`auto`（有 `grok` 命令走 CLI，否则走 API；CLI 失败回落 API）/ `cli` / `api` |
+| `GROK_CLI_PATH` | — | 自动探测 | `grok` 可执行文件路径（默认找 PATH、`~/.grok/bin`、`~/.local/bin`） |
+| `GROK_CLI_MODEL` | — | CLI 默认 | 传给 `grok --model`，留空用 `~/.grok/config.toml` 的默认模型 |
+| `GROK_CLI_EFFORT` | — | `medium` | 传给 `grok --reasoning-effort`（`low`/`medium`/`high`/`xhigh`）；`default` 表示不传。搜索场景 `xhigh` 一次要两分钟，故默认 `medium` |
+| `GROK_CLI_TIMEOUT` | — | `180` | CLI 单次搜索最长等待秒数 |
+| `GROK_API_URL` | 二选一 | — | OpenAI 兼容 Grok 端点（含 `/v1`）；没有 `grok` 命令时必填 |
+| `GROK_API_KEY` | 二选一 | — | Grok API key |
 | `GROK_MODEL` | — | `grok-4.3-fast` | 默认模型（也可被 `~/.config/grok-search/config.json` 覆盖） |
 | `TAVILY_API_KEYS` | — | — | Tavily key，逗号分隔多 key；也支持单数 `TAVILY_API_KEY` |
 | `TAVILY_API_URL` | — | `https://api.tavily.com` | Tavily 端点 |
@@ -122,10 +127,13 @@ claude mcp add-json grok-search --scope user '{
 ## FAQ
 
 **不配 Tavily / Firecrawl 能用吗？**
-能。只有 `GROK_API_URL` 和 `GROK_API_KEY` 是必填项。不配 Tavily，`web_fetch` 和 `web_map` 会返回配置提示。不配 Firecrawl，`web_screenshot` 返回配置提示，`web_fetch` 的 Firecrawl 降级路径跳过。
+能。Grok 后端二选一即可（本机 `grok` 命令，或 `GROK_API_URL` + `GROK_API_KEY`）。不配 Tavily，`web_fetch` 和 `web_map` 会返回配置提示。不配 Firecrawl，`web_screenshot` 返回配置提示，`web_fetch` 的 Firecrawl 降级路径跳过。
 
 **与内置 WebSearch 的区别是什么？怎么强制走本工具？**
 内置 `WebSearch` 由 Claude 托管，无法重定向到自定义端点。本 MCP 路由到你自己的 Grok 端点，并增加多源聚合、全文抓取和 key failover。强制路由：调用 `toggle_builtin_tools` 设 `action="on"`；恢复内置：设 `action="off"`。
+
+**Grok CLI 后端是怎么跑的？会不会套娃？**
+每次 `web_search` 起一个子进程 `grok -p <query> --output-format streaming-json`，只放开 `web_search`/`web_fetch` 两个内置工具、`dontAsk` 权限模式、固定空目录做工作目录，解析流式 JSON 拿答案与搜索命中的 URL，过程旁白自动剥离。grok CLI 会把 Claude Code 里注册的 MCP（包括本服务）一起挂载，子进程带 `GROK_SEARCH_NESTED=1`，嵌套启动的实例看到它就拒绝再走 CLI，不会无限递归。典型一次 30-40 秒。用 `get_config_info` 看 `active_grok_backend` 和 `grok_cli_health`。
 
 **支持哪些 Grok 端点？**
 任意暴露了 `/v1/chat/completions` 和 `/v1/models` 的 OpenAI 兼容端点，包括官方 `api.x.ai`、自建镜像和商业中转站。`GROK_API_URL` 填含 `/v1` 的基础 URL。

@@ -16,6 +16,7 @@ from pydantic import Field
 
 try:
     from grok_search.grok_client import GrokClient
+    from grok_search.grok_cli_client import GrokCliError, grok_cli_search
     from grok_search.logger import log_info
     from grok_search.config import config
     from grok_search.http_client import get_client
@@ -25,6 +26,7 @@ try:
     from grok_search.firecrawl_client import firecrawl_search, firecrawl_scrape, firecrawl_screenshot
 except ImportError:
     from .grok_client import GrokClient
+    from .grok_cli_client import GrokCliError, grok_cli_search
     from .logger import log_info
     from .config import config
     from .http_client import get_client
@@ -132,6 +134,8 @@ def _extra_results_to_sources(tavily_results, firecrawl_results) -> list[dict]:
     output_schema=None,
     description="""
     Performs a deep web search based on the given query and returns Grok's answer directly.
+    Backend is chosen automatically: local Grok Build CLI (`grok -p`, no API key needed) when installed,
+    otherwise the OpenAI-compatible Grok API. Check `get_config_info` → active_grok_backend.
 
     This tool extracts sources if provided by upstream, caches them, and returns:
     - session_id: string (When you feel confused or curious about the main content, use this field to invoke the get_sources tool to obtain the corresponding list of information sources)
@@ -144,35 +148,58 @@ async def web_search(
     query: Annotated[str, "Clear, self-contained natural-language search query."],
     platform: Annotated[str, "Target platform to focus on (e.g., 'Twitter', 'GitHub', 'Reddit'). Leave empty for general web search."] = "",
     model: Annotated[str, "Optional model ID for this request only. This value is used ONLY when user explicitly provided."] = "",
-    extra_sources: Annotated[int, "Number of additional reference results from Tavily/Firecrawl for cross-validation. Default 2. Set 0 only when the user explicitly wants Grok-only or to save quota."] = 2,
+    extra_sources: Annotated[int, "Number of additional reference results from Tavily/Firecrawl for cross-validation. Default 5. Set 0 only when the user explicitly wants Grok-only or to save quota."] = 5,
 ) -> dict:
     session_id = new_session_id()
-    try:
+    backend = config.resolve_grok_backend()
+    if backend == "none":
+        await _SOURCES_CACHE.set(session_id, [])
+        return {
+            "session_id": session_id,
+            "content": "配置错误: 没有可用的 Grok 后端。装好 grok 命令（Grok Build CLI）或设置 GROK_API_URL/GROK_API_KEY 其一即可。",
+            "sources_count": 0,
+        }
+
+    grok_api: GrokClient | None = None
+    if backend == "api" or config.grok_api_configured:
         api_url = config.grok_api_url
         api_key = config.grok_api_key
-    except ValueError as e:
-        await _SOURCES_CACHE.set(session_id, [])
-        return {"session_id": session_id, "content": f"配置错误: {str(e)}", "sources_count": 0}
-
-    effective_model = config.grok_model
-    if model:
-        available = await _get_available_models_cached(api_url, api_key)
-        if available and model not in available:
-            await _SOURCES_CACHE.set(session_id, [])
-            return {"session_id": session_id, "content": f"无效模型: {model}", "sources_count": 0}
-        effective_model = model
-
-    grok = GrokClient(api_url, api_key, effective_model)
+        effective_model = config.grok_model
+        if model and backend == "api":
+            available = await _get_available_models_cached(api_url, api_key)
+            if available and model not in available:
+                await _SOURCES_CACHE.set(session_id, [])
+                return {"session_id": session_id, "content": f"无效模型: {model}", "sources_count": 0}
+            effective_model = model
+        grok_api = GrokClient(api_url, api_key, effective_model)
 
     tavily_count, firecrawl_count = _split_extra_counts(
         extra_sources, bool(config.tavily_api_keys), bool(config.firecrawl_api_keys)
     )
 
-    async def _safe_grok() -> str:
+    async def _safe_grok_api() -> str:
+        if grok_api is None:
+            return ""
         try:
-            return await grok.search(query, platform)
+            return await grok_api.search(query, platform)
         except Exception:
             return ""
+
+    async def _safe_grok() -> tuple[str, list[dict], str]:
+        """返回 (答案文本, CLI 直接给出的信源, 实际用到的后端)。"""
+        if backend == "cli":
+            try:
+                answer, cli_sources = await grok_cli_search(query, platform, model)
+                return answer, cli_sources, "cli"
+            except GrokCliError as e:
+                await log_info(None, f"grok-cli failed: {e}", True)
+            except Exception as e:
+                await log_info(None, f"grok-cli unexpected error: {e!r}", True)
+            # auto 模式下 CLI 挂了回落 API；显式 cli 模式则不回落
+            if config.grok_backend != "auto" or grok_api is None:
+                return "", [], "cli"
+            return await _safe_grok_api(), [], "api(fallback)"
+        return await _safe_grok_api(), [], "api"
 
     # tavily_search / firecrawl_search 内部已吞掉所有异常并返回 None，
     # 这里直接建 task 并发跑，按名字取结果，不再依赖 gather 的位置索引。
@@ -180,13 +207,21 @@ async def web_search(
     tavily_task = asyncio.create_task(tavily_search(query, tavily_count)) if tavily_count > 0 else None
     firecrawl_task = asyncio.create_task(firecrawl_search(query, firecrawl_count)) if firecrawl_count > 0 else None
 
-    grok_result: str = (await grok_task) or ""
+    grok_result, cli_sources, used_backend = await grok_task
     tavily_results = await tavily_task if tavily_task else None
     firecrawl_results = await firecrawl_task if firecrawl_task else None
 
-    answer, grok_sources = split_answer_and_sources(grok_result)
+    answer, grok_sources = split_answer_and_sources(grok_result or "")
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
-    all_sources = merge_sources(grok_sources, extra)
+    all_sources = merge_sources(grok_sources, cli_sources, extra)
+
+    if not answer:
+        # Grok 没答上来时说清楚，别让调用方对着一堆裸链接猜
+        answer = (
+            f"[grok-search] Grok 后端（{used_backend}）没有返回内容。"
+            + (f"仅有 {len(all_sources)} 条 Tavily/Firecrawl 补充信源，可用 get_sources 查看。" if all_sources else "")
+            + " 可调用 get_config_info 排查。"
+        )
 
     await _SOURCES_CACHE.set(session_id, all_sources)
     return {"session_id": session_id, "content": answer, "sources_count": len(all_sources)}
@@ -372,9 +407,10 @@ async def get_config_info() -> str:
 
     # 两个探针互相独立，并发执行：总耗时从「连接测试 + 模型探针」之和
     # 缩短为两者中较慢的一个。
-    connection_test, default_model_health = await asyncio.gather(
-        _probe_models_endpoint(), _probe_default_model()
+    connection_test, default_model_health, cli_health = await asyncio.gather(
+        _probe_models_endpoint(), _probe_default_model(), _probe_grok_cli()
     )
+    config_info["grok_cli_health"] = cli_health
     config_info["connection_test"] = connection_test
     config_info["default_model_health"] = default_model_health
 
@@ -382,6 +418,40 @@ async def get_config_info() -> str:
     config_info["firecrawl_key_cooldown"] = cooldown_status(config.firecrawl_api_keys)
 
     return json.dumps(config_info, ensure_ascii=False, indent=2)
+
+
+async def _probe_grok_cli() -> dict:
+    """本机 grok CLI 探针：跑一次 `grok --version`，10 秒超时。"""
+    result = {"status": "未测试", "path": config.grok_cli_path or "未找到", "message": ""}
+    if config.grok_cli_nested:
+        result["status"] = "⏭ 嵌套调用中已禁用"
+        return result
+    if not config.grok_cli_path:
+        result["status"] = "❌ 未找到 grok 命令"
+        result["message"] = "安装 Grok Build CLI 或设置 GROK_CLI_PATH；当前 Grok 搜索只能走 API"
+        return result
+    try:
+        start_time = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            config.grok_cli_path, "--version",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        result["response_time_ms"] = round((time.monotonic() - start_time) * 1000, 2)
+        if proc.returncode == 0:
+            result["status"] = "✅ 可用"
+            result["message"] = stdout.decode("utf-8", "replace").strip()[:100]
+        else:
+            result["status"] = f"⚠️ 退出码 {proc.returncode}"
+            result["message"] = stderr.decode("utf-8", "replace").strip()[:200]
+    except asyncio.TimeoutError:
+        result["status"] = "❌ 探针超时"
+    except Exception as e:
+        result["status"] = "❌ 探针失败"
+        result["message"] = str(e)[:200]
+    return result
 
 
 async def _probe_models_endpoint() -> dict:

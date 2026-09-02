@@ -11,7 +11,7 @@
 Claude Code ships with its own `WebSearch` and `WebFetch` tools. This MCP server is not a replacement for those — it sits alongside them and offers capabilities the built-ins lack:
 
 - **Multi-source cross-verification** — `web_search` can fan out to Tavily/Firecrawl in parallel (`extra_sources` param) and merge all results before returning, so Claude can compare independently indexed sources in a single call.
-- **Grok relay endpoint** — route AI search traffic to any OpenAI-compatible endpoint (official Grok API, self-hosted mirrors, rate-limit bypass relays). The built-ins cannot be redirected.
+- **Two Grok backends** — with xAI's [Grok Build CLI](https://docs.x.ai/grok-build) installed (the `grok` command, logged in with a grok.com account) it searches through the CLI with zero API keys; otherwise it routes to any OpenAI-compatible endpoint (official Grok API, self-hosted mirrors, relays). The built-ins cannot be redirected.
 - **Full-text extraction** — `web_fetch` retrieves raw page content via Tavily Extract (with Firecrawl as fallback), returning 16 KB+ of structured Markdown rather than a short snippet. Useful for fact-pinning against primary sources.
 - **Force-routing control** — `toggle_builtin_tools` writes `WebSearch`/`WebFetch` into the project's `.claude/settings.json` deny list, so all web traffic goes through this MCP exclusively. You can flip it back at any time.
 - **Multi-key failover pool** — each API (Grok / Tavily / Firecrawl) supports comma-separated key lists with automatic 30-minute cooldown on errors, enabling uninterrupted operation across rate-limit events.
@@ -19,7 +19,7 @@ Claude Code ships with its own `WebSearch` and `WebFetch` tools. This MCP server
 ## Features
 
 - 8 MCP tools covering search, fetch, screenshot, site mapping, and runtime control
-- Grok AI search with session-scoped source caching
+- Grok AI search with session-scoped source caching; backend auto-selected: local `grok` CLI first, OpenAI-compatible API as fallback (`GROK_BACKEND` to force)
 - Tavily Extract as primary fetcher; Firecrawl as automatic fallback
 - Firecrawl JS-rendered screenshot (returns signed GCS URL)
 - Single key pool shared across `web_fetch` fallback, `extra_sources`, and `web_screenshot`
@@ -49,7 +49,7 @@ Claude Code ships with its own `WebSearch` and `WebFetch` tools. This MCP server
 
 ### Option A — Install from GitHub (recommended)
 
-Install directly with `uvx` and register it as an MCP server. Only `GROK_API_URL` and `GROK_API_KEY` are required; Tavily and Firecrawl are optional.
+Install directly with `uvx` and register it as an MCP server. Pick one Grok backend: if the `grok` command (Grok Build CLI, logged in) is installed nothing else is needed; otherwise set `GROK_API_URL` and `GROK_API_KEY`. Tavily and Firecrawl are optional.
 
 ```bash
 claude mcp add-json grok-search --scope user '{
@@ -88,8 +88,13 @@ The `.env` file defaults to the script's own directory. Override with `GROK_SEAR
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GROK_API_URL` | Yes | — | OpenAI-compatible Grok endpoint (must include `/v1`) |
-| `GROK_API_KEY` | Yes | — | Grok API key |
+| `GROK_BACKEND` | No | `auto` | Grok backend: `auto` (CLI when the `grok` command exists, else API; CLI failures fall back to API) / `cli` / `api` |
+| `GROK_CLI_PATH` | No | auto-detected | Path to the `grok` executable (searches PATH, `~/.grok/bin`, `~/.local/bin`) |
+| `GROK_CLI_MODEL` | No | CLI default | Passed as `grok --model`; empty uses the default from `~/.grok/config.toml` |
+| `GROK_CLI_EFFORT` | No | `medium` | Passed as `grok --reasoning-effort` (`low`/`medium`/`high`/`xhigh`); `default` means don't pass it. `xhigh` takes ~2 min per search, hence `medium` |
+| `GROK_CLI_TIMEOUT` | No | `180` | Max seconds to wait for one CLI search |
+| `GROK_API_URL` | One of two | — | OpenAI-compatible Grok endpoint (must include `/v1`); required when no `grok` command is available |
+| `GROK_API_KEY` | One of two | — | Grok API key |
 | `GROK_MODEL` | No | `grok-4.3-console` | Default model (also overridable via `~/.config/grok-search/config.json`) |
 | `TAVILY_API_KEYS` | No | — | Comma-separated Tavily keys; also accepts single `TAVILY_API_KEY` |
 | `TAVILY_API_URL` | No | `https://api.tavily.com` | Tavily endpoint |
@@ -122,10 +127,13 @@ After installation, tell Claude: *"Call toggle_builtin_tools with action=on"*. T
 ## FAQ
 
 **Can I use this without Tavily or Firecrawl?**
-Yes. Only `GROK_API_URL` and `GROK_API_KEY` are required. Without Tavily, `web_fetch` and `web_map` return a configuration notice. Without Firecrawl, `web_screenshot` returns a configuration notice, and Firecrawl fallback in `web_fetch` is skipped.
+Yes. You only need one Grok backend (the local `grok` command, or `GROK_API_URL` + `GROK_API_KEY`). Without Tavily, `web_fetch` and `web_map` return a configuration notice. Without Firecrawl, `web_screenshot` returns a configuration notice, and Firecrawl fallback in `web_fetch` is skipped.
 
 **How is this different from Claude Code's built-in WebSearch, and how do I force traffic here?**
 The built-in `WebSearch` is Claude-managed and cannot be redirected to a custom endpoint. This MCP routes to your own Grok endpoint and adds multi-source aggregation, full-text fetch, and key failover. To force all web traffic here, call `toggle_builtin_tools` with `action="on"`. To restore built-ins, use `action="off"`.
+
+**How does the Grok CLI backend work? Can it recurse?**
+Each `web_search` spawns `grok -p <query> --output-format streaming-json` with only the built-in `web_search`/`web_fetch` tools enabled, `dontAsk` permission mode and a fixed empty working directory, then parses the NDJSON stream for the answer and the URLs each search hit; progress narration is stripped. The grok CLI also mounts the MCP servers registered in Claude Code (including this one), so the child process gets `GROK_SEARCH_NESTED=1` and a nested instance refuses to use the CLI backend — no infinite recursion. A typical call takes 30-40 s. Check `active_grok_backend` and `grok_cli_health` in `get_config_info`.
 
 **Which Grok endpoints are supported?**
 Any OpenAI-compatible endpoint that exposes `/v1/chat/completions` and `/v1/models`. This includes the official `api.x.ai`, self-hosted mirrors, and commercial relay services. Set `GROK_API_URL` to the base URL including `/v1`.
