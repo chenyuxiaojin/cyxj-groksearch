@@ -31,7 +31,7 @@ Claude Code 自带 `WebSearch` 和 `WebFetch`。这个 MCP 不是替代，而是
 
 | 工具 | 作用 | 关键参数 |
 |------|------|---------|
-| `web_search` | Grok AI 搜索（本机 `grok` CLI 或 API，自动选）；缓存信源（CLI 后端会把每次搜索命中的原始 URL 也存进去），返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数，默认 2，设 0 关闭） |
+| `web_search` | Grok AI 搜索（本机 `grok` CLI 或 API，自动选）；缓存信源（CLI 后端会把每次搜索命中的原始 URL 也存进去），返回 `session_id` + `content` + `sources_count` | `query`、`platform`（可选，限定平台）、`model`（单次覆盖）、`extra_sources`（附加 Tavily/Firecrawl 信源数，默认 5，设 0 关闭） |
 | `get_sources` | 按 `session_id` 取上次 `web_search` 缓存的完整信源列表 | `session_id` |
 | `web_fetch` | 抓取 URL 全文，以 Markdown 返回；Tavily 主抓取 → Firecrawl 降级 | `url` |
 | `web_screenshot` | Firecrawl JS 渲染截图，返回签名 PNG URL | `url`、`full_page`（bool，默认 false） |
